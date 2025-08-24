@@ -1,0 +1,6 @@
+pydub
+numpy
+requests
+ffmpeg-python
+python-dotenv
+
