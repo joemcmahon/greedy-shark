@@ -32,6 +32,11 @@ If you want to use the Greedy Shark, you'll need to set up a `.env` file for it.
     AZURACAST_API_KEY=<your API key from Azuracast>
     AZURACAST_STATION_ID=<your station shortcode>
 
+    # Discord Bot Configuration (for grace period commands)
+    DISCORD_BOT_TOKEN=<your bot token from Discord Developer Portal>
+    DISCORD_CHANNEL_ID=<your Discord channel ID>
+    GRACE_PERIOD_MINUTES=15
+
 `STREAM_URL` - The audio stream that the Shark will sample.
 `DISCORD_WEBHOOK_URL` - Defines the Discord and Discord channel that messages will go to.
 
@@ -47,6 +52,10 @@ If you want to use the Greedy Shark, you'll need to set up a `.env` file for it.
 `AZURACAST_BASE_URL` - The base URL of your Azuracast instance (e.g., https://azuracast.yourstation.com).
 `AZURACAST_API_KEY` - An API key created in Azuracast with permissions for "View Station Reports" and "Manage Station Broadcasting".
 `AZURACAST_STATION_ID` - Your station's shortcode or ID from Azuracast.
+
+`DISCORD_BOT_TOKEN` - A Discord bot token from the Discord Developer Portal (required for grace period commands).
+`DISCORD_CHANNEL_ID` - The Discord channel ID where the bot should listen for commands.
+`GRACE_PERIOD_MINUTES` - Duration in minutes for the grace period (default: 15).
 
 ## How it Works
 
@@ -64,9 +73,38 @@ When a live streamer is connected, the Shark switches to a more lenient rule to 
 ### Audio Detection Resets Timer
 Any time audio is detected, all timers reset. This means streamers can make "please stand by" announcements or play brief audio clips to keep their connection active while working through issues.
 
+### Grace Period (Optional)
+If you run the optional Discord bot (`grace_period_bot.py`), streamers or staff can use the `!working-on-it` command to activate a grace period. During this time:
+
+- No warnings or suspensions occur
+- The monitor continues checking audio but doesn't take action
+- Grace period expires after the configured duration (default 15 minutes)
+- Can be renewed by running the command again
+- Can be cancelled early with `!cancel-grace`
+- Check status with `!grace-status`
+
+This is useful when a streamer is experiencing technical difficulties but is actively working to resolve them.
+
 ### State Transitions
 - When a streamer connects, the monitor switches from 2-minute to 10-minute mode
 - When a streamer disconnects (naturally or via suspension), it switches back to 2-minute mode
+- When `!working-on-it` is used, the monitor enters grace period mode
+- When grace period expires, normal monitoring resumes
 - All silence counters reset on state transitions
 
 The silence detection algorithm looks for zero-amplitude signals. The signal level is hardcoded, as it has proven reliable for detecting true silence versus very quiet audio.
+
+## Setting Up the Discord Bot
+
+To enable the grace period feature:
+
+1. Go to the [Discord Developer Portal](https://discord.com/developers/applications)
+2. Create a new application or use an existing one
+3. Navigate to the "Bot" section and create a bot
+4. Copy the bot token and add it to your `.env` as `DISCORD_BOT_TOKEN`
+5. Under "Privileged Gateway Intents", enable "Message Content Intent"
+6. Invite the bot to your server with appropriate permissions (Read Messages, Send Messages)
+7. Get your channel ID (enable Developer Mode in Discord, right-click channel, Copy ID)
+8. Run the bot: `python grace_period_bot.py`
+
+The bot can run alongside the monitor script or separately.

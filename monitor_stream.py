@@ -28,6 +28,9 @@ AZURACAST_BASE_URL = os.getenv("AZURACAST_BASE_URL")
 AZURACAST_API_KEY = os.getenv("AZURACAST_API_KEY")
 AZURACAST_STATION_ID = os.getenv("AZURACAST_STATION_ID")
 
+# Grace period configuration
+GRACE_PERIOD_FILE = ".grace_period_until"
+
 # Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 
@@ -164,6 +167,31 @@ def suspend_streamer(streamer_id):
         return False
 
 
+def check_grace_period_active():
+    """
+    Check if a grace period is currently active by reading the timestamp file.
+    Returns True if grace period is active, False otherwise.
+    """
+    try:
+        if not os.path.exists(GRACE_PERIOD_FILE):
+            return False
+
+        with open(GRACE_PERIOD_FILE, 'r') as f:
+            timestamp = float(f.read().strip())
+
+        expiration = time.time()
+        if timestamp > expiration:
+            return True
+        else:
+            # Grace period expired, clean up the file
+            os.remove(GRACE_PERIOD_FILE)
+            return False
+
+    except Exception as e:
+        logging.error(f"Error checking grace period: {e}")
+        return False
+
+
 def grab_audio_sample(url, duration):
     cmd = [
         "ffmpeg",
@@ -245,12 +273,44 @@ def monitor_loop():
         # Check if a streamer is connected
         is_streamer_connected, streamer_name, streamer_id = check_streamer_connected()
 
+        # Check if grace period is active
+        grace_period_active = check_grace_period_active()
+
         # State transition logic
         previous_state = current_state
 
-        if is_streamer_connected and current_state == MonitorState.NO_STREAMER:
-            # Transition: NO_STREAMER -> STREAMER_ACTIVE
-            current_state = MonitorState.STREAMER_ACTIVE
+        # Handle grace period transitions
+        if grace_period_active and current_state == MonitorState.STREAMER_ACTIVE:
+            # Transition: STREAMER_ACTIVE -> GRACE_PERIOD
+            current_state = MonitorState.GRACE_PERIOD
+            consecutive_silent_checks = 0
+            warning_sent = False
+            logging.info(f"State transition: {previous_state.value} -> {current_state.value}")
+            send_discord_message(f"Grace period activated for '{current_streamer_name}'. Monitoring paused.")
+
+        elif not grace_period_active and current_state == MonitorState.GRACE_PERIOD:
+            # Transition: GRACE_PERIOD -> STREAMER_ACTIVE (grace period expired)
+            if is_streamer_connected:
+                current_state = MonitorState.STREAMER_ACTIVE
+                consecutive_silent_checks = 0
+                warning_sent = False
+                logging.info(f"State transition: {previous_state.value} -> {current_state.value}")
+                send_discord_message(f"Grace period expired for '{current_streamer_name}'. Normal monitoring resumed.")
+            else:
+                # Streamer disconnected during grace period
+                current_state = MonitorState.NO_STREAMER
+                logging.info(f"State transition: {previous_state.value} -> {current_state.value}")
+                current_streamer_id = None
+                current_streamer_name = None
+                consecutive_silent_checks = 0
+                warning_sent = False
+
+        elif is_streamer_connected and current_state == MonitorState.NO_STREAMER:
+            # Transition: NO_STREAMER -> STREAMER_ACTIVE (or GRACE_PERIOD if already active)
+            if grace_period_active:
+                current_state = MonitorState.GRACE_PERIOD
+            else:
+                current_state = MonitorState.STREAMER_ACTIVE
             current_streamer_id = streamer_id
             current_streamer_name = streamer_name
             consecutive_silent_checks = 0
@@ -258,8 +318,8 @@ def monitor_loop():
             logging.info(f"State transition: {previous_state.value} -> {current_state.value}")
             logging.info(f"Streamer connected: {streamer_name} (ID: {streamer_id})")
 
-        elif not is_streamer_connected and current_state == MonitorState.STREAMER_ACTIVE:
-            # Transition: STREAMER_ACTIVE -> NO_STREAMER
+        elif not is_streamer_connected and current_state in [MonitorState.STREAMER_ACTIVE, MonitorState.GRACE_PERIOD]:
+            # Transition: STREAMER_ACTIVE/GRACE_PERIOD -> NO_STREAMER
             current_state = MonitorState.NO_STREAMER
             logging.info(f"State transition: {previous_state.value} -> {current_state.value}")
             logging.info(f"Streamer disconnected: {current_streamer_name}")
@@ -310,6 +370,10 @@ def monitor_loop():
                 current_streamer_id = None
                 current_streamer_name = None
                 logging.info(f"State transition: STREAMER_ACTIVE -> NO_STREAMER (post-suspension)")
+
+        elif current_state == MonitorState.GRACE_PERIOD:
+            # Grace period - no alerts or suspensions, just log
+            logging.info(f"⏸️ Grace period active. Silent checks: {consecutive_silent_checks} (monitoring paused)")
 
         time.sleep(CHECK_INTERVAL_SECONDS)
 

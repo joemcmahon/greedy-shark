@@ -3,4 +3,5 @@ numpy
 requests
 ffmpeg-python
 python-dotenv
+discord.py
 
