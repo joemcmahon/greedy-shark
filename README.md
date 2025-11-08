@@ -27,6 +27,11 @@ If you want to use the Greedy Shark, you'll need to set up a `.env` file for it.
 
     STAFF_ROLE_ID=<captured from your Discord>
 
+    # Azuracast API Configuration
+    AZURACAST_BASE_URL=https://your-azuracast-instance.com
+    AZURACAST_API_KEY=<your API key from Azuracast>
+    AZURACAST_STATION_ID=<your station shortcode>
+
 `STREAM_URL` - The audio stream that the Shark will sample.
 `DISCORD_WEBHOOK_URL` - Defines the Discord and Discord channel that messages will go to.
 
@@ -39,5 +44,29 @@ If you want to use the Greedy Shark, you'll need to set up a `.env` file for it.
 
 `STAFF_ROLE_ID` - The `@role` that the Shark sends its message to.
 
-Currently, the silence detection algorithm looks for a zero-amplitude signal for more than two minutes. The signal level and duration are hardcoded, as
-I didn't feel that I wanted or needed to change those. It would be simple to add these to the `.env` as well if desired -- patches welcome.
+`AZURACAST_BASE_URL` - The base URL of your Azuracast instance (e.g., https://azuracast.yourstation.com).
+`AZURACAST_API_KEY` - An API key created in Azuracast with permissions for "View Station Reports" and "Manage Station Broadcasting".
+`AZURACAST_STATION_ID` - Your station's shortcode or ID from Azuracast.
+
+## How it Works
+
+Greedy Shark uses a state machine to monitor your stream with two different rulesets:
+
+### No Streamer Connected (2-minute rule)
+When no live streamer/DJ is connected to Azuracast, the Shark applies the standard broadcast rule: **2 consecutive minutes of silence triggers an alert**. This catches situations where your AutoDJ has failed or the stream has gone down.
+
+### Streamer Connected (10-minute rule)
+When a live streamer is connected, the Shark switches to a more lenient rule to accommodate natural pauses, technical adjustments, or brief breaks:
+
+- **8 minutes of silence**: Sends a warning message "Forced disconnect imminent" to give the streamer a 2-minute heads-up
+- **10 minutes of silence**: Automatically suspends the streamer's account in Azuracast (preventing auto-reconnect) and sends a "Streamer forced off" notification
+
+### Audio Detection Resets Timer
+Any time audio is detected, all timers reset. This means streamers can make "please stand by" announcements or play brief audio clips to keep their connection active while working through issues.
+
+### State Transitions
+- When a streamer connects, the monitor switches from 2-minute to 10-minute mode
+- When a streamer disconnects (naturally or via suspension), it switches back to 2-minute mode
+- All silence counters reset on state transitions
+
+The silence detection algorithm looks for zero-amplitude signals. The signal level is hardcoded, as it has proven reliable for detecting true silence versus very quiet audio.
