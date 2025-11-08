@@ -257,76 +257,137 @@ STREAMER_SUSPEND_THRESHOLD = 10  # 10 x 60s = 10 minutes
 
 consecutive_silent_checks = 0
 
+class MonitorContext:
+    """Holds the state machine context and variables."""
+    def __init__(self):
+        self.state = MonitorState.NO_STREAMER
+        self.consecutive_silent_checks = 0
+        self.streamer_id = None
+        self.streamer_name = None
+        self.warning_sent = False
+
+    def reset_counters(self):
+        """Reset silence counters and warning flag."""
+        self.consecutive_silent_checks = 0
+        self.warning_sent = False
+
+    def clear_streamer_info(self):
+        """Clear current streamer information."""
+        self.streamer_id = None
+        self.streamer_name = None
+
+
+def determine_next_state(ctx, is_streamer_connected, grace_period_active):
+    """
+    Determine the next state based on current state and conditions.
+    Returns the new state or None if no transition needed.
+    """
+    current = ctx.state
+
+    # Grace period transitions
+    if grace_period_active and current == MonitorState.STREAMER_ACTIVE:
+        return MonitorState.GRACE_PERIOD
+
+    if not grace_period_active and current == MonitorState.GRACE_PERIOD:
+        return MonitorState.STREAMER_ACTIVE if is_streamer_connected else MonitorState.NO_STREAMER
+
+    # Streamer connection/disconnection transitions
+    if is_streamer_connected and current == MonitorState.NO_STREAMER:
+        return MonitorState.GRACE_PERIOD if grace_period_active else MonitorState.STREAMER_ACTIVE
+
+    if not is_streamer_connected and current in [MonitorState.STREAMER_ACTIVE, MonitorState.GRACE_PERIOD]:
+        return MonitorState.NO_STREAMER
+
+    return None  # No transition
+
+
+def handle_state_transition(ctx, new_state, streamer_name=None, streamer_id=None):
+    """Execute a state transition with logging and counter resets."""
+    previous_state = ctx.state
+    ctx.state = new_state
+    ctx.reset_counters()
+
+    logging.info(f"State transition: {previous_state.value} -> {new_state.value}")
+
+    # Handle transition-specific actions
+    if new_state == MonitorState.GRACE_PERIOD and previous_state == MonitorState.STREAMER_ACTIVE:
+        send_discord_message(f"Grace period activated for '{ctx.streamer_name}'. Monitoring paused.")
+
+    elif new_state == MonitorState.STREAMER_ACTIVE and previous_state == MonitorState.GRACE_PERIOD:
+        send_discord_message(f"Grace period expired for '{ctx.streamer_name}'. Normal monitoring resumed.")
+
+    elif new_state == MonitorState.STREAMER_ACTIVE and previous_state == MonitorState.NO_STREAMER:
+        ctx.streamer_id = streamer_id
+        ctx.streamer_name = streamer_name
+        logging.info(f"Streamer connected: {streamer_name} (ID: {streamer_id})")
+
+    elif new_state == MonitorState.GRACE_PERIOD and previous_state == MonitorState.NO_STREAMER:
+        ctx.streamer_id = streamer_id
+        ctx.streamer_name = streamer_name
+        logging.info(f"Streamer connected: {streamer_name} (ID: {streamer_id})")
+
+    elif new_state == MonitorState.NO_STREAMER:
+        logging.info(f"Streamer disconnected: {ctx.streamer_name}")
+        ctx.clear_streamer_info()
+
+
+def handle_no_streamer_silence(ctx):
+    """Handle silence detection when no streamer is connected."""
+    if ctx.consecutive_silent_checks == SILENCE_ALERT_LEVEL:
+        send_discord_alert("🚨 **Stream silent for 2 minutes!** (No streamer connected)")
+        ctx.consecutive_silent_checks = 0
+
+
+def handle_streamer_active_silence(ctx):
+    """Handle silence detection when a streamer is actively connected."""
+    if ctx.consecutive_silent_checks == STREAMER_WARNING_THRESHOLD and not ctx.warning_sent:
+        send_discord_alert(f"⚠️ **Forced disconnect imminent** - Streamer '{ctx.streamer_name}' has been silent for 8 minutes. Suspension in 2 minutes if silence continues.")
+        ctx.warning_sent = True
+
+    elif ctx.consecutive_silent_checks >= STREAMER_SUSPEND_THRESHOLD:
+        if suspend_streamer(ctx.streamer_id):
+            send_discord_alert(f"🚨 **Streamer forced off** - '{ctx.streamer_name}' has been suspended after 10 minutes of silence.")
+        else:
+            send_discord_alert(f"❌ **Failed to suspend streamer** - '{ctx.streamer_name}' has been silent for 10 minutes but suspension failed. Manual intervention required.")
+
+        # Transition to NO_STREAMER after suspension
+        logging.info(f"State transition: STREAMER_ACTIVE -> NO_STREAMER (post-suspension)")
+        ctx.state = MonitorState.NO_STREAMER
+        ctx.reset_counters()
+        ctx.clear_streamer_info()
+
+
+def handle_grace_period_silence(ctx):
+    """Handle silence during grace period (no action, just logging)."""
+    logging.info(f"⏸️ Grace period active. Silent checks: {ctx.consecutive_silent_checks} (monitoring paused)")
+
+
+def handle_silence_by_state(ctx):
+    """Route silence handling to the appropriate state handler."""
+    if ctx.state == MonitorState.NO_STREAMER:
+        handle_no_streamer_silence(ctx)
+    elif ctx.state == MonitorState.STREAMER_ACTIVE:
+        handle_streamer_active_silence(ctx)
+    elif ctx.state == MonitorState.GRACE_PERIOD:
+        handle_grace_period_silence(ctx)
+
+
 def monitor_loop():
     send_discord_message("Greedy Shark is active")
 
-    # State machine variables
-    current_state = MonitorState.NO_STREAMER
-    consecutive_silent_checks = 0
-    current_streamer_id = None
-    current_streamer_name = None
-    warning_sent = False
+    ctx = MonitorContext()
 
     while True:
-        logging.info(f"🔁 Checking stream... [State: {current_state.value}]")
+        logging.info(f"🔁 Checking stream... [State: {ctx.state.value}]")
 
-        # Check if a streamer is connected
+        # Check external conditions
         is_streamer_connected, streamer_name, streamer_id = check_streamer_connected()
-
-        # Check if grace period is active
         grace_period_active = check_grace_period_active()
 
-        # State transition logic
-        previous_state = current_state
-
-        # Handle grace period transitions
-        if grace_period_active and current_state == MonitorState.STREAMER_ACTIVE:
-            # Transition: STREAMER_ACTIVE -> GRACE_PERIOD
-            current_state = MonitorState.GRACE_PERIOD
-            consecutive_silent_checks = 0
-            warning_sent = False
-            logging.info(f"State transition: {previous_state.value} -> {current_state.value}")
-            send_discord_message(f"Grace period activated for '{current_streamer_name}'. Monitoring paused.")
-
-        elif not grace_period_active and current_state == MonitorState.GRACE_PERIOD:
-            # Transition: GRACE_PERIOD -> STREAMER_ACTIVE (grace period expired)
-            if is_streamer_connected:
-                current_state = MonitorState.STREAMER_ACTIVE
-                consecutive_silent_checks = 0
-                warning_sent = False
-                logging.info(f"State transition: {previous_state.value} -> {current_state.value}")
-                send_discord_message(f"Grace period expired for '{current_streamer_name}'. Normal monitoring resumed.")
-            else:
-                # Streamer disconnected during grace period
-                current_state = MonitorState.NO_STREAMER
-                logging.info(f"State transition: {previous_state.value} -> {current_state.value}")
-                current_streamer_id = None
-                current_streamer_name = None
-                consecutive_silent_checks = 0
-                warning_sent = False
-
-        elif is_streamer_connected and current_state == MonitorState.NO_STREAMER:
-            # Transition: NO_STREAMER -> STREAMER_ACTIVE (or GRACE_PERIOD if already active)
-            if grace_period_active:
-                current_state = MonitorState.GRACE_PERIOD
-            else:
-                current_state = MonitorState.STREAMER_ACTIVE
-            current_streamer_id = streamer_id
-            current_streamer_name = streamer_name
-            consecutive_silent_checks = 0
-            warning_sent = False
-            logging.info(f"State transition: {previous_state.value} -> {current_state.value}")
-            logging.info(f"Streamer connected: {streamer_name} (ID: {streamer_id})")
-
-        elif not is_streamer_connected and current_state in [MonitorState.STREAMER_ACTIVE, MonitorState.GRACE_PERIOD]:
-            # Transition: STREAMER_ACTIVE/GRACE_PERIOD -> NO_STREAMER
-            current_state = MonitorState.NO_STREAMER
-            logging.info(f"State transition: {previous_state.value} -> {current_state.value}")
-            logging.info(f"Streamer disconnected: {current_streamer_name}")
-            current_streamer_id = None
-            current_streamer_name = None
-            consecutive_silent_checks = 0
-            warning_sent = False
+        # Determine and execute state transitions
+        new_state = determine_next_state(ctx, is_streamer_connected, grace_period_active)
+        if new_state:
+            handle_state_transition(ctx, new_state, streamer_name, streamer_id)
 
         # Sample and analyze audio
         wav_bytes = grab_audio_sample(STREAM_URL, SAMPLE_DURATION)
@@ -335,45 +396,16 @@ def monitor_loop():
             is_active = analyze_audio(wav_bytes)
             if is_active:
                 logging.info("✅ Stream is active and broadcasting.")
-                consecutive_silent_checks = 0  # reset on success
-                warning_sent = False
+                ctx.reset_counters()
             else:
-                consecutive_silent_checks += 1
-                logging.warning(f"⚠️ Stream appears silent or inactive. ({consecutive_silent_checks} checks)")
+                ctx.consecutive_silent_checks += 1
+                logging.warning(f"⚠️ Stream appears silent or inactive. ({ctx.consecutive_silent_checks} checks)")
         else:
-            consecutive_silent_checks += 1
-            logging.error(f"❌ Failed to retrieve audio sample. ({consecutive_silent_checks} checks)")
+            ctx.consecutive_silent_checks += 1
+            logging.error(f"❌ Failed to retrieve audio sample. ({ctx.consecutive_silent_checks} checks)")
 
         # Handle silence based on current state
-        if current_state == MonitorState.NO_STREAMER:
-            # 2-minute rule when no streamer connected
-            if consecutive_silent_checks == SILENCE_ALERT_LEVEL:
-                send_discord_alert("🚨 **Stream silent for 2 minutes!** (No streamer connected)")
-                consecutive_silent_checks = 0  # prevent continuous yelling
-
-        elif current_state == MonitorState.STREAMER_ACTIVE:
-            # 10-minute rule for connected streamers
-            if consecutive_silent_checks == STREAMER_WARNING_THRESHOLD and not warning_sent:
-                send_discord_alert(f"⚠️ **Forced disconnect imminent** - Streamer '{current_streamer_name}' has been silent for 8 minutes. Suspension in 2 minutes if silence continues.")
-                warning_sent = True
-
-            elif consecutive_silent_checks >= STREAMER_SUSPEND_THRESHOLD:
-                if suspend_streamer(current_streamer_id):
-                    send_discord_alert(f"🚨 **Streamer forced off** - '{current_streamer_name}' has been suspended after 10 minutes of silence.")
-                else:
-                    send_discord_alert(f"❌ **Failed to suspend streamer** - '{current_streamer_name}' has been silent for 10 minutes but suspension failed. Manual intervention required.")
-
-                # Transition back to NO_STREAMER state after suspension
-                current_state = MonitorState.NO_STREAMER
-                consecutive_silent_checks = 0
-                warning_sent = False
-                current_streamer_id = None
-                current_streamer_name = None
-                logging.info(f"State transition: STREAMER_ACTIVE -> NO_STREAMER (post-suspension)")
-
-        elif current_state == MonitorState.GRACE_PERIOD:
-            # Grace period - no alerts or suspensions, just log
-            logging.info(f"⏸️ Grace period active. Silent checks: {consecutive_silent_checks} (monitoring paused)")
+        handle_silence_by_state(ctx)
 
         time.sleep(CHECK_INTERVAL_SECONDS)
 
