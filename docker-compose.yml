@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  monitor:
+    build: .
+    container_name: greedy-shark-monitor
+    command: python monitor_stream.py
+    volumes:
+      - ./.grace_period_until:/app/.grace_period_until
+    env_file:
+      - .env
+    restart: unless-stopped
+    networks:
+      - greedy-shark-network
+
+  bot:
+    build: .
+    container_name: greedy-shark-bot
+    command: python grace_period_bot.py
+    volumes:
+      - ./.grace_period_until:/app/.grace_period_until
+    env_file:
+      - .env
+    restart: unless-stopped
+    networks:
+      - greedy-shark-network
+    depends_on:
+      - monitor
+
+networks:
+  greedy-shark-network:
+    driver: bridge

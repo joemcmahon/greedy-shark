@@ -108,3 +108,27 @@ To enable the grace period feature:
 8. Run the bot: `python grace_period_bot.py`
 
 The bot can run alongside the monitor script or separately.
+
+## Running with Docker Compose
+
+The easiest way to run both the monitor and the bot together is with Docker Compose:
+
+```bash
+# Build and start both services
+docker-compose up -d
+
+# View logs
+docker-compose logs -f
+
+# Stop services
+docker-compose down
+```
+
+This will:
+- Build the Docker image with all dependencies
+- Start the monitor and bot as separate containers
+- Share the grace period file between them
+- Auto-restart on failures
+- Run in the background
+
+Both services share the `.grace_period_until` file via a shared volume, allowing the bot and monitor to communicate.
