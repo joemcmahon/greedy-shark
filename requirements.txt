@@ -4,4 +4,6 @@ requests
 ffmpeg-python
 python-dotenv
 discord.py
+pytest
+pytest-mock
 

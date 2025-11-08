@@ -132,3 +132,31 @@ This will:
 - Run in the background
 
 Both services share the `.grace_period_until` file via a shared volume, allowing the bot and monitor to communicate.
+
+## Running Tests
+
+The project includes comprehensive unit tests that don't require a running Azuracast instance:
+
+```bash
+# Install test dependencies
+pip install -r requirements.txt
+
+# Run all tests
+pytest test_monitor.py -v
+
+# Run specific test class
+pytest test_monitor.py::TestMonitorContext -v
+
+# Run with coverage report
+pytest test_monitor.py --cov=monitor_stream --cov-report=term-missing
+```
+
+The test suite covers:
+- MonitorContext class initialization and methods
+- State transition logic (determine_next_state)
+- State transition execution (handle_state_transition)
+- Silence handling for all three states
+- Grace period file handling
+- Full lifecycle scenarios
+
+All external dependencies (Azuracast API, Discord webhooks, file I/O) are mocked, so tests run quickly and reliably without network access.
