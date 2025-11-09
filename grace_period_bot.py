@@ -35,7 +35,37 @@ async def on_ready():
     print(f'Monitoring channel ID: {DISCORD_CHANNEL_ID}')
     print(f'Grace period duration: {GRACE_PERIOD_MINUTES} minutes')
 
-@bot.command(name='shark-help', aliases=['sharkhelp', 'help'])
+    # Send startup message to Discord channel
+    print('Attempting to send startup message...')
+    try:
+        print(f'Looking for channel {DISCORD_CHANNEL_ID}...')
+        channel = bot.get_channel(DISCORD_CHANNEL_ID)
+        print(f'Channel found: {channel}')
+        if channel:
+            print('Sending message...')
+            await channel.send("🦈 **Greedy Shark is now online and monitoring!**\nType `!shark-help` for available commands.")
+            print(f'✅ Startup message sent to channel {DISCORD_CHANNEL_ID}')
+        else:
+            print(f'❌ ERROR: Could not find channel {DISCORD_CHANNEL_ID}')
+            print(f'Available guilds: {[g.name for g in bot.guilds]}')
+    except Exception as e:
+        print(f'❌ ERROR sending startup message: {e}')
+        import traceback
+        traceback.print_exc()
+
+@bot.event
+async def on_message(message):
+    # Don't respond to ourselves
+    if message.author == bot.user:
+        return
+
+    # Log all messages for debugging
+    print(f'[DEBUG] Message from {message.author} in channel {message.channel.id}: {message.content}')
+
+    # Process commands
+    await bot.process_commands(message)
+
+@bot.command(name='shark-help', aliases=['sharkhelp'])
 async def shark_help(ctx):
     """
     Display all available Greedy Shark bot commands.
@@ -63,7 +93,10 @@ async def shark_help(ctx):
   Example: `!letin TestDJ`
   Note: Only works on auto-suspensions, not manual staff suspensions
 
-• `!shark-help` (or `!help`) - Show this help message
+• `!shark-status` (or `!status`) - Show current Shark monitoring status
+  Displays suspended users and stream silence status
+
+• `!shark-help` (or `!sharkhelp`) - Show this help message
 
 **How the Shark Works:**
 • No streamer connected: 2-minute silence → alert
@@ -210,6 +243,88 @@ async def letin(ctx, username: str):
     except Exception as e:
         await ctx.send(f"❌ Error: {str(e)}")
         print(f"Error in letin command: {e}")
+
+@bot.command(name='shark-status', aliases=['sharkstatus', 'status'])
+async def shark_status(ctx):
+    """
+    Display current Shark monitoring status.
+    """
+    # Only respond in the configured channel
+    if ctx.channel.id != DISCORD_CHANNEL_ID:
+        return
+
+    try:
+        # Load suspended streamers
+        suspended = load_auto_suspended_streamers()
+
+        # Build suspended users summary
+        if not suspended:
+            suspended_msg = "No users suspended"
+        else:
+            count = len(suspended)
+            user_word = "user" if count == 1 else "users"
+            names = [info.get('name', 'Unknown') for info in suspended.values()]
+            suspended_msg = f"{count} {user_word} suspended: {', '.join(names)}"
+
+        # Load monitor state from shared file
+        state_file = ".monitor_state"
+        if os.path.exists(state_file):
+            try:
+                with open(state_file, 'r') as f:
+                    state_data = json.load(f)
+
+                monitor_state = state_data.get('state', 'unknown')
+                silence_checks = state_data.get('consecutive_silent_checks', 0)
+                streamer_name = state_data.get('streamer_name', '')
+
+                # Check if grace period is active
+                grace_active = False
+                grace_remaining = 0
+                if os.path.exists(GRACE_PERIOD_FILE):
+                    try:
+                        with open(GRACE_PERIOD_FILE, 'r') as f:
+                            content = f.read().strip()
+                        if content:
+                            grace_timestamp = float(content)
+                            now = time.time()
+                            if grace_timestamp > now:
+                                grace_active = True
+                                grace_remaining = int((grace_timestamp - now) / 60)
+                    except:
+                        pass
+
+                # Build status message based on state
+                if grace_active and streamer_name:
+                    status_msg = f"**{streamer_name}** streaming, {grace_remaining} minute{'s' if grace_remaining != 1 else ''} into grace period"
+                elif monitor_state == 'no_streamer':
+                    if silence_checks == 0:
+                        status_msg = "No silence detected"
+                    else:
+                        seconds = silence_checks * 60
+                        status_msg = f"No streamer, {seconds} second{'s' if seconds != 1 else ''} silence"
+                elif monitor_state == 'streamer_active':
+                    if silence_checks == 0:
+                        status_msg = f"**{streamer_name}** streaming, no silence detected"
+                    else:
+                        minutes = silence_checks
+                        status_msg = f"**{streamer_name}** streaming, {minutes} minute{'s' if minutes != 1 else ''} silence"
+                else:
+                    status_msg = "Monitor status unknown"
+            except Exception as e:
+                status_msg = f"Error reading monitor state: {str(e)}"
+        else:
+            status_msg = "Monitor state not available"
+
+        # Build final message
+        message = f"🦈 **Greedy Shark Status**\n\n"
+        message += f"**Suspended:** {suspended_msg}\n"
+        message += f"**Status:** {status_msg}"
+
+        await ctx.send(message)
+
+    except Exception as e:
+        await ctx.send(f"❌ Error: {str(e)}")
+        print(f"Error in shark-status command: {e}")
 
 @bot.command(name='sharked')
 async def sharked(ctx):

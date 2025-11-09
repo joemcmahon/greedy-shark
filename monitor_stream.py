@@ -6,6 +6,7 @@ import logging
 import requests
 import numpy as np
 import json
+import sys
 from io import BytesIO
 from pydub import AudioSegment
 from dotenv import load_dotenv
@@ -35,6 +36,9 @@ GRACE_PERIOD_FILE = ".grace_period_until"
 
 # Auto-suspension tracking
 AUTO_SUSPENDED_FILE = ".auto_suspended_streamers"
+
+# Monitor state tracking (shared with bot)
+MONITOR_STATE_FILE = ".monitor_state"
 
 # Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
@@ -239,7 +243,13 @@ def check_grace_period_active():
             return False
 
         with open(GRACE_PERIOD_FILE, 'r') as f:
-            timestamp = float(f.read().strip())
+            content = f.read().strip()
+
+        # Empty file means no grace period
+        if not content:
+            return False
+
+        timestamp = float(content)
 
         expiration = time.time()
         if timestamp > expiration:
@@ -496,6 +506,22 @@ def handle_silence_by_state(ctx):
         handle_grace_period_silence(ctx)
 
 
+def save_monitor_state(ctx):
+    """Save current monitor state to file for bot access."""
+    try:
+        state_data = {
+            "state": ctx.state.value,
+            "consecutive_silent_checks": ctx.consecutive_silent_checks,
+            "streamer_name": ctx.streamer_name or "",
+            "streamer_id": ctx.streamer_id,
+            "timestamp": time.time()
+        }
+        with open(MONITOR_STATE_FILE, 'w') as f:
+            json.dump(state_data, f)
+    except Exception as e:
+        logging.error(f"Error saving monitor state: {e}")
+
+
 def monitor_loop():
     send_discord_message("Greedy Shark is active")
 
@@ -530,6 +556,9 @@ def monitor_loop():
 
         # Handle silence based on current state
         handle_silence_by_state(ctx)
+
+        # Save current state for bot access
+        save_monitor_state(ctx)
 
         time.sleep(CHECK_INTERVAL_SECONDS)
 

@@ -113,8 +113,9 @@ To enable the grace period feature:
 2. Create a new application or use an existing one
 3. Navigate to the "Bot" section and create a bot
 4. Copy the bot token and add it to your `.env` as `DISCORD_BOT_TOKEN`
-5. Under "Privileged Gateway Intents", enable "Message Content Intent"
-6. Invite the bot to your server with appropriate permissions (Read Messages, Send Messages)
+5. In the "Bot" tab, Under "Privileged Gateway Intents", enable "Message Content Intent"
+6. In the Oauth2 tab, first check "bot" in the Oauth2 URL Generator section, then in the section that appears, check "Send Messages", "View Channels", and "Read Message History"
+6. Copy the generated URL and open it in the browser to invite the bot to your server.
 7. Get your channel ID (enable Developer Mode in Discord, right-click channel, Copy ID)
 8. Run the bot: `python grace_period_bot.py`
 

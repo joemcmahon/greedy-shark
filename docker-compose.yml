@@ -7,11 +7,12 @@ services:
     command: python monitor_stream.py
     volumes:
       - ./.grace_period_until:/app/.grace_period_until
+      - ./.auto_suspended_streamers:/app/.auto_suspended_streamers
+      - ./.monitor_state:/app/.monitor_state
     env_file:
       - .env
     restart: unless-stopped
-    networks:
-      - greedy-shark-network
+    network_mode: host
 
   bot:
     build: .
@@ -19,11 +20,12 @@ services:
     command: python grace_period_bot.py
     volumes:
       - ./.grace_period_until:/app/.grace_period_until
+      - ./.auto_suspended_streamers:/app/.auto_suspended_streamers
+      - ./.monitor_state:/app/.monitor_state
     env_file:
       - .env
     restart: unless-stopped
-    networks:
-      - greedy-shark-network
+    network_mode: host
     depends_on:
       - monitor
 
