@@ -35,6 +35,45 @@ async def on_ready():
     print(f'Monitoring channel ID: {DISCORD_CHANNEL_ID}')
     print(f'Grace period duration: {GRACE_PERIOD_MINUTES} minutes')
 
+@bot.command(name='shark-help', aliases=['sharkhelp', 'help'])
+async def shark_help(ctx):
+    """
+    Display all available Greedy Shark bot commands.
+    """
+    # Only respond in the configured channel
+    if ctx.channel.id != DISCORD_CHANNEL_ID:
+        return
+
+    help_text = """
+🦈 **Greedy Shark Bot Commands**
+
+**Grace Period Commands:**
+• `!working-on-it` (or `!woi`) - Activate a {grace_min}-minute grace period
+  Pauses auto-suspension monitoring while you fix technical issues
+
+• `!grace-status` (or `!gs`) - Check if grace period is active and when it expires
+
+• `!cancel-grace` (or `!cg`) - Cancel an active grace period early
+
+**Streamer Management:**
+• `!sharked` - List all streamers auto-suspended by the Shark
+  Shows names, timestamps, and reasons for suspension
+
+• `!letin <username>` - Re-enable a streamer auto-suspended by the Shark
+  Example: `!letin TestDJ`
+  Note: Only works on auto-suspensions, not manual staff suspensions
+
+• `!shark-help` (or `!help`) - Show this help message
+
+**How the Shark Works:**
+• No streamer connected: 2-minute silence → alert
+• Streamer connected: 8-minute warning, 10-minute auto-suspension
+• Audio detection resets all timers
+• Grace period pauses monitoring entirely
+""".format(grace_min=GRACE_PERIOD_MINUTES)
+
+    await ctx.send(help_text)
+
 @bot.command(name='working-on-it', aliases=['workingonit', 'woi'])
 async def working_on_it(ctx):
     """

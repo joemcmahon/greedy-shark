@@ -93,6 +93,9 @@ When the Shark auto-suspends a streamer after 10 minutes of silence, it tracks t
 
 **Important:** These commands only work on streamers that the Shark automatically suspended. Streamers manually suspended by staff through the Azuracast UI will not appear in `!sharked` and cannot be re-enabled with `!letin`. This prevents accidentally re-enabling someone suspended for policy violations.
 
+### Getting Help
+Use `!shark-help` (or just `!help`) in Discord to see all available commands with usage examples.
+
 ### State Transitions
 - When a streamer connects, the monitor switches from 2-minute to 10-minute mode
 - When a streamer disconnects (naturally or via suspension), it switches back to 2-minute mode
