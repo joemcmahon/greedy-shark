@@ -2,3 +2,5 @@
 monitor-venv
 .grace_period_until
 .auto_suspended_streamers
+.monitor_state
+__pycache__/
