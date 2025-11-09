@@ -5,10 +5,12 @@ import time
 import logging
 import requests
 import numpy as np
+import json
 from io import BytesIO
 from pydub import AudioSegment
 from dotenv import load_dotenv
 from enum import Enum
+from datetime import datetime
 
 # Config from environment
 load_dotenv()
@@ -30,6 +32,9 @@ AZURACAST_STATION_ID = os.getenv("AZURACAST_STATION_ID")
 
 # Grace period configuration
 GRACE_PERIOD_FILE = ".grace_period_until"
+
+# Auto-suspension tracking
+AUTO_SUSPENDED_FILE = ".auto_suspended_streamers"
 
 # Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
@@ -167,6 +172,63 @@ def suspend_streamer(streamer_id):
         return False
 
 
+def reactivate_streamer(streamer_id):
+    """
+    Re-enable a streamer account via Azuracast API.
+    Returns True if successful, False otherwise.
+    """
+    if not AZURACAST_BASE_URL or not AZURACAST_API_KEY or not AZURACAST_STATION_ID:
+        logging.error("Azuracast API not configured. Cannot reactivate streamer.")
+        return False
+
+    if not streamer_id:
+        logging.error("No streamer ID provided. Cannot reactivate.")
+        return False
+
+    try:
+        # Re-enable the streamer account
+        streamer_url = f"{AZURACAST_BASE_URL}/api/station/{AZURACAST_STATION_ID}/streamer/{streamer_id}"
+        headers = {"X-API-Key": AZURACAST_API_KEY}
+        payload = {"is_active": True}
+
+        resp = requests.put(streamer_url, headers=headers, json=payload, timeout=10)
+        if resp.status_code in [200, 204]:
+            logging.info(f"Successfully reactivated streamer account ID {streamer_id}")
+            return True
+        else:
+            logging.error(f"Failed to reactivate streamer: {resp.status_code} - {resp.text}")
+            return False
+
+    except Exception as e:
+        logging.error(f"Error reactivating streamer: {e}")
+        return False
+
+
+def get_all_streamers():
+    """
+    Get list of all streamers from Azuracast API.
+    Returns list of streamers with id and display_name, or None on error.
+    """
+    if not AZURACAST_BASE_URL or not AZURACAST_API_KEY or not AZURACAST_STATION_ID:
+        logging.error("Azuracast API not configured. Cannot fetch streamers.")
+        return None
+
+    try:
+        streamers_url = f"{AZURACAST_BASE_URL}/api/station/{AZURACAST_STATION_ID}/streamers"
+        headers = {"X-API-Key": AZURACAST_API_KEY}
+
+        resp = requests.get(streamers_url, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            return resp.json()
+        else:
+            logging.error(f"Failed to fetch streamers: {resp.status_code} - {resp.text}")
+            return None
+
+    except Exception as e:
+        logging.error(f"Error fetching streamers: {e}")
+        return None
+
+
 def check_grace_period_active():
     """
     Check if a grace period is currently active by reading the timestamp file.
@@ -190,6 +252,66 @@ def check_grace_period_active():
     except Exception as e:
         logging.error(f"Error checking grace period: {e}")
         return False
+
+
+def load_auto_suspended_streamers():
+    """
+    Load the list of auto-suspended streamers from file.
+    Returns dict: {streamer_id: {name, suspended_at, reason}}
+    """
+    try:
+        if not os.path.exists(AUTO_SUSPENDED_FILE):
+            return {}
+
+        with open(AUTO_SUSPENDED_FILE, 'r') as f:
+            return json.load(f)
+
+    except Exception as e:
+        logging.error(f"Error loading auto-suspended streamers: {e}")
+        return {}
+
+
+def save_auto_suspended_streamers(suspended_dict):
+    """
+    Save the list of auto-suspended streamers to file.
+    """
+    try:
+        with open(AUTO_SUSPENDED_FILE, 'w') as f:
+            json.dump(suspended_dict, f, indent=2)
+
+    except Exception as e:
+        logging.error(f"Error saving auto-suspended streamers: {e}")
+
+
+def add_auto_suspended_streamer(streamer_id, streamer_name, reason="10 minutes of silence"):
+    """
+    Add a streamer to the auto-suspension tracking list.
+    """
+    suspended = load_auto_suspended_streamers()
+    suspended[str(streamer_id)] = {
+        "name": streamer_name,
+        "suspended_at": datetime.now().isoformat(),
+        "reason": reason
+    }
+    save_auto_suspended_streamers(suspended)
+    logging.info(f"Added {streamer_name} (ID: {streamer_id}) to auto-suspended list")
+
+
+def remove_auto_suspended_streamer(streamer_id):
+    """
+    Remove a streamer from the auto-suspension tracking list.
+    Returns True if removed, False if not found.
+    """
+    suspended = load_auto_suspended_streamers()
+    streamer_id_str = str(streamer_id)
+
+    if streamer_id_str in suspended:
+        del suspended[streamer_id_str]
+        save_auto_suspended_streamers(suspended)
+        logging.info(f"Removed streamer ID {streamer_id} from auto-suspended list")
+        return True
+
+    return False
 
 
 def grab_audio_sample(url, duration):
@@ -346,6 +468,8 @@ def handle_streamer_active_silence(ctx):
 
     elif ctx.consecutive_silent_checks >= STREAMER_SUSPEND_THRESHOLD:
         if suspend_streamer(ctx.streamer_id):
+            # Track this auto-suspension
+            add_auto_suspended_streamer(ctx.streamer_id, ctx.streamer_name, "10 minutes of silence")
             send_discord_alert(f"🚨 **Streamer forced off** - '{ctx.streamer_name}' has been suspended after 10 minutes of silence.")
         else:
             send_discord_alert(f"❌ **Failed to suspend streamer** - '{ctx.streamer_name}' has been silent for 10 minutes but suspension failed. Manual intervention required.")

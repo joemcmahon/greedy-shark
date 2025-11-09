@@ -1,3 +1,4 @@
 .env
 monitor-venv
 .grace_period_until
+.auto_suspended_streamers

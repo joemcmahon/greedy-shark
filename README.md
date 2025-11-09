@@ -85,6 +85,14 @@ If you run the optional Discord bot (`grace_period_bot.py`), streamers or staff 
 
 This is useful when a streamer is experiencing technical difficulties but is actively working to resolve them.
 
+### Re-enabling Auto-Suspended Streamers
+When the Shark auto-suspends a streamer after 10 minutes of silence, it tracks this in a file. Staff can re-enable these streamers using Discord commands:
+
+- **`!sharked`** - List all streamers auto-suspended by the Shark (with timestamps and reasons)
+- **`!letin <username>`** - Re-enable a specific streamer that was auto-suspended
+
+**Important:** These commands only work on streamers that the Shark automatically suspended. Streamers manually suspended by staff through the Azuracast UI will not appear in `!sharked` and cannot be re-enabled with `!letin`. This prevents accidentally re-enabling someone suspended for policy violations.
+
 ### State Transitions
 - When a streamer connects, the monitor switches from 2-minute to 10-minute mode
 - When a streamer disconnects (naturally or via suspension), it switches back to 2-minute mode

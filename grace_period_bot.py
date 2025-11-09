@@ -3,7 +3,18 @@ import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 import time
+import json
 from datetime import datetime, timedelta
+
+# Import functions from monitor_stream
+import sys
+sys.path.insert(0, os.path.dirname(__file__))
+from monitor_stream import (
+    load_auto_suspended_streamers,
+    remove_auto_suspended_streamer,
+    reactivate_streamer,
+    get_all_streamers
+)
 
 # Load configuration
 load_dotenv()
@@ -11,6 +22,7 @@ DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 DISCORD_CHANNEL_ID = int(os.getenv("DISCORD_CHANNEL_ID", "0"))
 GRACE_PERIOD_MINUTES = int(os.getenv("GRACE_PERIOD_MINUTES", 15))
 GRACE_PERIOD_FILE = ".grace_period_until"
+AUTO_SUSPENDED_FILE = ".auto_suspended_streamers"
 
 # Bot setup
 intents = discord.Intents.default()
@@ -102,6 +114,106 @@ async def grace_status(ctx):
     except Exception as e:
         await ctx.send(f"❌ Failed to check grace period status: {str(e)}")
         print(f"Error checking grace period: {e}")
+
+@bot.command(name='letin', aliases=['let-in'])
+async def letin(ctx, username: str):
+    """
+    Re-enable a streamer that was auto-suspended by the Shark.
+    Only works on streamers suspended by the monitoring system.
+    """
+    # Only respond in the configured channel
+    if ctx.channel.id != DISCORD_CHANNEL_ID:
+        return
+
+    try:
+        # Get list of auto-suspended streamers
+        suspended = load_auto_suspended_streamers()
+
+        if not suspended:
+            await ctx.send("ℹ️ No streamers are currently auto-suspended by the Shark.")
+            return
+
+        # Find the streamer by name
+        streamer_id = None
+        streamer_info = None
+
+        for sid, info in suspended.items():
+            if info['name'].lower() == username.lower():
+                streamer_id = int(sid)
+                streamer_info = info
+                break
+
+        if not streamer_id:
+            # Check if streamer exists but wasn't auto-suspended
+            all_streamers = get_all_streamers()
+            if all_streamers:
+                for s in all_streamers:
+                    if s.get('display_name', '').lower() == username.lower():
+                        await ctx.send(f"ℹ️ '{username}' is not suspended by the Shark. "
+                                     f"They may have been manually suspended by staff or are already active.")
+                        return
+
+            await ctx.send(f"❌ Streamer '{username}' not found in auto-suspended list. "
+                         f"Use `!sharked` to see who the Shark has suspended.")
+            return
+
+        # Re-enable the streamer via Azuracast API
+        if reactivate_streamer(streamer_id):
+            # Remove from tracking list
+            remove_auto_suspended_streamer(streamer_id)
+            await ctx.send(f"✅ Successfully re-enabled '{streamer_info['name']}'! "
+                         f"They were auto-suspended {streamer_info.get('reason', 'for silence')}.")
+            print(f"Streamer {streamer_info['name']} re-enabled by {ctx.author}")
+        else:
+            await ctx.send(f"❌ Failed to re-enable '{streamer_info['name']}' via Azuracast API. "
+                         f"Check logs for details.")
+
+    except Exception as e:
+        await ctx.send(f"❌ Error: {str(e)}")
+        print(f"Error in letin command: {e}")
+
+@bot.command(name='sharked')
+async def sharked(ctx):
+    """
+    List all streamers that have been auto-suspended by the Shark.
+    """
+    # Only respond in the configured channel
+    if ctx.channel.id != DISCORD_CHANNEL_ID:
+        return
+
+    try:
+        suspended = load_auto_suspended_streamers()
+
+        if not suspended:
+            await ctx.send("ℹ️ No streamers are currently auto-suspended by the Shark. All clear! 🦈")
+            return
+
+        # Build the message
+        message = "🦈 **Streamers auto-suspended by the Shark:**\n\n"
+
+        for sid, info in suspended.items():
+            name = info.get('name', 'Unknown')
+            suspended_at = info.get('suspended_at', 'Unknown time')
+            reason = info.get('reason', 'Unknown reason')
+
+            # Parse and format the timestamp
+            try:
+                dt = datetime.fromisoformat(suspended_at)
+                time_str = dt.strftime('%Y-%m-%d %H:%M:%S')
+            except:
+                time_str = suspended_at
+
+            message += f"• **{name}** (ID: {sid})\n"
+            message += f"  ├ Suspended: {time_str}\n"
+            message += f"  └ Reason: {reason}\n\n"
+
+        message += f"Use `!letin <username>` to re-enable a streamer."
+
+        await ctx.send(message)
+
+    except Exception as e:
+        await ctx.send(f"❌ Error: {str(e)}")
+        print(f"Error in sharked command: {e}")
 
 if __name__ == "__main__":
     if not DISCORD_BOT_TOKEN or DISCORD_BOT_TOKEN == "your_bot_token_here":
