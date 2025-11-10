@@ -13,6 +13,12 @@ services:
       - .env
     restart: unless-stopped
     network_mode: host
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os; exit(0 if os.path.exists('.monitor_state') and os.path.getmtime('.monitor_state') > __import__('time').time() - 120 else 1)"]
+      interval: 2m
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   bot:
     build: .
@@ -28,6 +34,12 @@ services:
     network_mode: host
     depends_on:
       - monitor
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "grace_period_bot.py"]
+      interval: 2m
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
 networks:
   greedy-shark-network:
