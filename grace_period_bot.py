@@ -13,7 +13,9 @@ from monitor_stream import (
     load_auto_suspended_streamers,
     remove_auto_suspended_streamer,
     reactivate_streamer,
-    get_all_streamers
+    get_all_streamers,
+    suspend_streamer,
+    add_auto_suspended_streamer
 )
 
 # Load configuration
@@ -408,6 +410,63 @@ async def streamers(ctx):
     except Exception as e:
         await ctx.send(f"❌ Error: {str(e)}")
         print(f"Error in streamers command: {e}")
+
+@bot.command(name='shark')
+async def shark(ctx, streamer_id: str = None):
+    """
+    Suspend a specific streamer by their Azuracast numeric ID.
+    Use !streamers to find the ID first.
+    """
+    if ctx.channel.id != DISCORD_CHANNEL_ID:
+        return
+
+    # Require an ID argument
+    if streamer_id is None:
+        await ctx.send("❌ You must provide a streamer ID. Use `!streamers` to see IDs, then `!shark <id>`.")
+        return
+
+    # Validate it's numeric
+    if not streamer_id.isdigit():
+        await ctx.send(f"❌ '{streamer_id}' is not a valid ID. IDs are numeric. Use `!streamers` to see them.")
+        return
+
+    sid = int(streamer_id)
+
+    try:
+        # Look up the streamer in Azuracast to verify they exist and get their name
+        all_streamers = get_all_streamers()
+        if all_streamers is None:
+            await ctx.send("❌ Failed to fetch streamers from Azuracast. Cannot verify ID. Check logs.")
+            return
+
+        target = None
+        for s in all_streamers:
+            if s.get('id') == sid:
+                target = s
+                break
+
+        if target is None:
+            await ctx.send(f"❌ No streamer found with ID `{sid}`. Use `!streamers` to see valid IDs.")
+            return
+
+        name = target.get('display_name', f'ID {sid}')
+
+        # Check if already suspended
+        if not target.get('is_active', True):
+            await ctx.send(f"ℹ️ **{name}** (ID: `{sid}`) is already suspended.")
+            return
+
+        # Suspend via Azuracast API
+        if suspend_streamer(sid):
+            add_auto_suspended_streamer(sid, name, reason="staff action via !shark")
+            await ctx.send(f"🦈 **{name}** (ID: `{sid}`) has been suspended by {ctx.author.display_name}.")
+            print(f"Streamer {name} (ID: {sid}) suspended by {ctx.author}")
+        else:
+            await ctx.send(f"❌ Failed to suspend **{name}** (ID: `{sid}`) via Azuracast API. Check logs.")
+
+    except Exception as e:
+        await ctx.send(f"❌ Error: {str(e)}")
+        print(f"Error in shark command: {e}")
 
 if __name__ == "__main__":
     if not DISCORD_BOT_TOKEN or DISCORD_BOT_TOKEN == "your_bot_token_here":
