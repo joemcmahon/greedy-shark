@@ -81,28 +81,36 @@ async def shark_help(ctx):
 
 **Grace Period Commands:**
 • `!working-on-it` (or `!woi`) - Activate a {grace_min}-minute grace period
-  Pauses auto-suspension monitoring while you fix technical issues
+  Pauses monitoring while you fix technical issues
 
 • `!grace-status` (or `!gs`) - Check if grace period is active and when it expires
 
 • `!cancel-grace` (or `!cg`) - Cancel an active grace period early
 
 **Streamer Management:**
-• `!sharked` - List all streamers auto-suspended by the Shark
+• `!streamers` - List all registered streamers with their IDs and status
+  Use this first to find the ID you need for !shark
+
+• `!shark <id>` - Suspend a streamer by their numeric Azuracast ID
+  Example: `!shark 42`
+  Recommended workflow: `!streamers` → find ID → `!shark <id>`
+
+• `!sharked` - List all streamers currently suspended by the Shark
   Shows names, timestamps, and reasons for suspension
 
-• `!letin <username>` - Re-enable a streamer auto-suspended by the Shark
+• `!letin <username>` - Re-enable a streamer suspended by the Shark
   Example: `!letin TestDJ`
-  Note: Only works on auto-suspensions, not manual staff suspensions
+  Note: Only works on suspensions made via !shark, not manual staff suspensions
 
 • `!shark-status` (or `!status`) - Show current Shark monitoring status
-  Displays suspended users and stream silence status
 
 • `!shark-help` (or `!sharkhelp`) - Show this help message
 
 **How the Shark Works:**
-• No streamer connected: 2-minute silence → alert
-• Streamer connected: 8-minute warning, 10-minute auto-suspension
+• No streamer connected: 2-minute silence → staff alert
+• Streamer connected: 4-minute silence → warning alert to staff
+• 10+ minutes silence: escalating urgent alerts every check interval
+• Staff uses `!streamers` then `!shark <id>` to suspend when needed
 • Audio detection resets all timers
 • Grace period pauses monitoring entirely
 """.format(grace_min=GRACE_PERIOD_MINUTES)
