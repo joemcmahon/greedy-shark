@@ -384,7 +384,7 @@ def analyze_audio(wav_bytes):
     return True
 
 SILENCE_ALERT_LEVEL = 2 # 2 x 60s = 2 minutes (no streamer threshold)
-STREAMER_WARNING_THRESHOLD = 8  # 8 x 60s = 8 minutes
+STREAMER_WARNING_THRESHOLD = 4  # 4 x 60s = 4 minutes
 STREAMER_SUSPEND_THRESHOLD = 10  # 10 x 60s = 10 minutes
 
 consecutive_silent_checks = 0

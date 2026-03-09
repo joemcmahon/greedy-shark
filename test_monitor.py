@@ -193,8 +193,8 @@ class TestSilenceHandlers:
         mock_alert.assert_not_called()
 
     @patch('monitor_stream.send_discord_alert')
-    def test_streamer_active_warning_at_8_minutes(self, mock_alert):
-        """Test that warning is sent at 8-minute threshold."""
+    def test_streamer_active_warning_at_4_minutes(self, mock_alert):
+        """Test that warning is sent at 4-minute threshold."""
         ctx = MonitorContext()
         ctx.state = MonitorState.STREAMER_ACTIVE
         ctx.streamer_name = "TestDJ"
