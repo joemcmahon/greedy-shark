@@ -473,22 +473,11 @@ def handle_no_streamer_silence(ctx):
 def handle_streamer_active_silence(ctx):
     """Handle silence detection when a streamer is actively connected."""
     if ctx.consecutive_silent_checks == STREAMER_WARNING_THRESHOLD and not ctx.warning_sent:
-        send_discord_alert(f"⚠️ **Forced disconnect imminent** - Streamer '{ctx.streamer_name}' has been silent for 8 minutes. Suspension in 2 minutes if silence continues.")
+        send_discord_alert(f"⚠️ **Action may be needed soon** - Streamer '{ctx.streamer_name}' has been silent for {STREAMER_WARNING_THRESHOLD} minutes. Use `!shark <id>` to suspend if needed.")
         ctx.warning_sent = True
 
     elif ctx.consecutive_silent_checks >= STREAMER_SUSPEND_THRESHOLD:
-        if suspend_streamer(ctx.streamer_id):
-            # Track this auto-suspension
-            add_auto_suspended_streamer(ctx.streamer_id, ctx.streamer_name, "10 minutes of silence")
-            send_discord_alert(f"🚨 **Streamer forced off** - '{ctx.streamer_name}' has been suspended after 10 minutes of silence.")
-        else:
-            send_discord_alert(f"❌ **Failed to suspend streamer** - '{ctx.streamer_name}' has been silent for 10 minutes but suspension failed. Manual intervention required.")
-
-        # Transition to NO_STREAMER after suspension
-        logging.info(f"State transition: STREAMER_ACTIVE -> NO_STREAMER (post-suspension)")
-        ctx.state = MonitorState.NO_STREAMER
-        ctx.reset_counters()
-        ctx.clear_streamer_info()
+        send_discord_alert(f"🚨 **Staff action required** - Streamer '{ctx.streamer_name}' has been silent for {ctx.consecutive_silent_checks} minutes. Use `!streamers` then `!shark <id>` to suspend.")
 
 
 def handle_grace_period_silence(ctx):

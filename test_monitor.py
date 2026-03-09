@@ -204,7 +204,7 @@ class TestSilenceHandlers:
         handle_streamer_active_silence(ctx)
 
         mock_alert.assert_called_once()
-        assert "imminent" in mock_alert.call_args[0][0]
+        assert "Action may be needed soon" in mock_alert.call_args[0][0]
         assert ctx.warning_sent is True
 
     @patch('monitor_stream.send_discord_alert')
@@ -222,10 +222,8 @@ class TestSilenceHandlers:
 
     @patch('monitor_stream.suspend_streamer')
     @patch('monitor_stream.send_discord_alert')
-    def test_streamer_suspended_at_10_minutes(self, mock_alert, mock_suspend):
-        """Test that streamer is suspended at 10-minute threshold."""
-        mock_suspend.return_value = True
-
+    def test_no_auto_suspend_at_10_minutes(self, mock_alert, mock_suspend):
+        """Test that streamer is NOT auto-suspended at 10-minute threshold."""
         ctx = MonitorContext()
         ctx.state = MonitorState.STREAMER_ACTIVE
         ctx.streamer_name = "TestDJ"
@@ -234,18 +232,13 @@ class TestSilenceHandlers:
 
         handle_streamer_active_silence(ctx)
 
-        mock_suspend.assert_called_once_with(123)
-        mock_alert.assert_called_once()
-        assert "forced off" in mock_alert.call_args[0][0]
-        assert ctx.state == MonitorState.NO_STREAMER
-        assert ctx.streamer_id is None
+        mock_suspend.assert_not_called()
+        assert ctx.state == MonitorState.STREAMER_ACTIVE
+        assert ctx.streamer_id == 123
 
-    @patch('monitor_stream.suspend_streamer')
     @patch('monitor_stream.send_discord_alert')
-    def test_streamer_suspension_failure_handled(self, mock_alert, mock_suspend):
-        """Test that suspension failure sends appropriate alert."""
-        mock_suspend.return_value = False
-
+    def test_urgent_alert_sent_at_10_minutes(self, mock_alert):
+        """Test that an urgent alert is sent at 10-minute threshold."""
         ctx = MonitorContext()
         ctx.state = MonitorState.STREAMER_ACTIVE
         ctx.streamer_name = "TestDJ"
@@ -255,7 +248,21 @@ class TestSilenceHandlers:
         handle_streamer_active_silence(ctx)
 
         mock_alert.assert_called_once()
-        assert "Failed to suspend" in mock_alert.call_args[0][0]
+        assert "TestDJ" in mock_alert.call_args[0][0]
+
+    @patch('monitor_stream.send_discord_alert')
+    def test_urgent_alert_repeats_after_10_minutes(self, mock_alert):
+        """Test that urgent alert repeats on every check after 10 minutes."""
+        ctx = MonitorContext()
+        ctx.state = MonitorState.STREAMER_ACTIVE
+        ctx.streamer_name = "TestDJ"
+        ctx.streamer_id = 123
+        ctx.consecutive_silent_checks = STREAMER_SUSPEND_THRESHOLD + 3
+
+        handle_streamer_active_silence(ctx)
+
+        mock_alert.assert_called_once()
+        assert "TestDJ" in mock_alert.call_args[0][0]
 
 
 class TestHandleSilenceByState:
