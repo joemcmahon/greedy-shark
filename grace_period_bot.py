@@ -168,8 +168,13 @@ async def grace_status(ctx):
     try:
         if os.path.exists(GRACE_PERIOD_FILE):
             with open(GRACE_PERIOD_FILE, 'r') as f:
-                timestamp = float(f.read().strip())
+                content = f.read().strip()
 
+            if not content:
+                await ctx.send("ℹ️ No active grace period. Normal monitoring active.")
+                return
+
+            timestamp = float(content)
             expiration = datetime.fromtimestamp(timestamp)
             now = datetime.now()
 

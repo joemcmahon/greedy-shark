@@ -330,6 +330,16 @@ class TestGracePeriod:
         assert result is False
         mock_remove.assert_called_once()
 
+    @patch('builtins.open', new_callable=mock_open, read_data='')
+    @patch('os.path.exists')
+    def test_grace_period_not_active_when_file_empty(self, mock_exists, mock_file):
+        """Test that empty grace period file is treated as inactive."""
+        mock_exists.return_value = True
+
+        result = check_grace_period_active()
+
+        assert result is False
+
 
 class TestStateTransitionScenarios:
     """Integration-style tests for common state transition scenarios."""
