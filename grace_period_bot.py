@@ -205,7 +205,7 @@ async def grace_status(ctx):
 @bot.command(name='letin', aliases=['let-in'])
 async def letin(ctx, username: str):
     """
-    Re-enable a streamer that was auto-suspended by the Shark.
+    Re-enable a streamer that was suspended by the Shark.
     Only works on streamers suspended by the monitoring system.
     """
     # Only respond in the configured channel
@@ -217,7 +217,7 @@ async def letin(ctx, username: str):
         suspended = load_auto_suspended_streamers()
 
         if not suspended:
-            await ctx.send("ℹ️ No streamers are currently auto-suspended by the Shark.")
+            await ctx.send("ℹ️ No streamers are currently suspended by the Shark.")
             return
 
         # Find the streamer by name
@@ -249,7 +249,7 @@ async def letin(ctx, username: str):
             # Remove from tracking list
             remove_auto_suspended_streamer(streamer_id)
             await ctx.send(f"✅ Successfully re-enabled '{streamer_info['name']}'! "
-                         f"They were auto-suspended {streamer_info.get('reason', 'for silence')}.")
+                         f"They were suspended: {streamer_info.get('reason', 'for silence')}.")
             print(f"Streamer {streamer_info['name']} re-enabled by {ctx.author}")
         else:
             await ctx.send(f"❌ Failed to re-enable '{streamer_info['name']}' via Azuracast API. "
@@ -344,7 +344,7 @@ async def shark_status(ctx):
 @bot.command(name='sharked')
 async def sharked(ctx):
     """
-    List all streamers that have been auto-suspended by the Shark.
+    List all streamers that have been suspended by the Shark.
     """
     # Only respond in the configured channel
     if ctx.channel.id != DISCORD_CHANNEL_ID:
@@ -354,11 +354,11 @@ async def sharked(ctx):
         suspended = load_auto_suspended_streamers()
 
         if not suspended:
-            await ctx.send("ℹ️ No streamers are currently auto-suspended by the Shark. All clear! 🦈")
+            await ctx.send("ℹ️ No streamers are currently suspended by the Shark. All clear! 🦈")
             return
 
         # Build the message
-        message = "🦈 **Streamers auto-suspended by the Shark:**\n\n"
+        message = "🦈 **Streamers suspended by the Shark:**\n\n"
 
         for sid, info in suspended.items():
             name = info.get('name', 'Unknown')
