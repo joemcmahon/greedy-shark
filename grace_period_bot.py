@@ -374,6 +374,41 @@ async def sharked(ctx):
         await ctx.send(f"❌ Error: {str(e)}")
         print(f"Error in sharked command: {e}")
 
+@bot.command(name='streamers')
+async def streamers(ctx):
+    """
+    List all streamers registered in Azuracast with their IDs and status.
+    Use IDs with !shark to suspend a specific streamer.
+    """
+    if ctx.channel.id != DISCORD_CHANNEL_ID:
+        return
+
+    try:
+        all_streamers = get_all_streamers()
+
+        if all_streamers is None:
+            await ctx.send("❌ Failed to fetch streamers from Azuracast. Check logs for details.")
+            return
+
+        if not all_streamers:
+            await ctx.send("ℹ️ No streamers found in Azuracast.")
+            return
+
+        message = "🦈 **Registered Streamers:**\n\n"
+        for s in sorted(all_streamers, key=lambda x: x.get('display_name', '').lower()):
+            sid = s.get('id', '?')
+            name = s.get('display_name', 'Unknown')
+            active = s.get('is_active', True)
+            status = "✅ active" if active else "🔴 suspended"
+            message += f"• **{name}** (ID: `{sid}`) — {status}\n"
+
+        message += f"\nUse `!shark <id>` to suspend a streamer by their ID."
+        await ctx.send(message)
+
+    except Exception as e:
+        await ctx.send(f"❌ Error: {str(e)}")
+        print(f"Error in streamers command: {e}")
+
 if __name__ == "__main__":
     if not DISCORD_BOT_TOKEN or DISCORD_BOT_TOKEN == "your_bot_token_here":
         print("ERROR: DISCORD_BOT_TOKEN not configured in .env file")
