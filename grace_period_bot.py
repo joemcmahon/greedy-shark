@@ -98,10 +98,9 @@ async def shark_help(ctx):
 • `!sharked` - List all streamers currently suspended by the Shark
   Shows names, timestamps, and reasons for suspension
 
-• `!letin <id>` - Re-enable a streamer suspended by the Shark, by their numeric ID
-  Example: `!letin 42`
-  Recommended workflow: `!sharked` → find ID → `!letin <id>`
-  Note: Only works on suspensions made via !shark, not manual staff suspensions
+• `!unshark <id>` - Re-enable a suspended streamer by their numeric Azuracast ID
+  Example: `!unshark 42`
+  Recommended workflow: `!streamers` → find ID → `!unshark <id>`
 
 • `!shark-status` (or `!status`) - Show current Shark monitoring status
 
@@ -203,56 +202,58 @@ async def grace_status(ctx):
         await ctx.send(f"❌ Failed to check grace period status: {str(e)}")
         print(f"Error checking grace period: {e}")
 
-@bot.command(name='letin', aliases=['let-in'])
-async def letin(ctx, streamer_id: str = None):
+@bot.command(name='unshark', aliases=['letin', 'let-in'])
+async def unshark(ctx, streamer_id: str = None):
     """
-    Re-enable a streamer that was suspended by the Shark, by their numeric ID.
-    Use !sharked to see suspended streamers and their IDs.
+    Re-enable a suspended streamer by their Azuracast numeric ID.
+    Use !streamers to find the ID first.
     """
-    # Only respond in the configured channel
     if ctx.channel.id != DISCORD_CHANNEL_ID:
         return
 
-    # Require an ID argument
     if streamer_id is None:
-        await ctx.send("❌ You must provide a streamer ID. Use `!sharked` to see suspended streamers and their IDs, then `!letin <id>`.")
+        await ctx.send("❌ You must provide a streamer ID. Use `!streamers` to see IDs, then `!unshark <id>`.")
         return
 
-    # Validate it's numeric
     if not streamer_id.isdigit():
-        await ctx.send(f"❌ '{streamer_id}' is not a valid ID. IDs are numeric. Use `!sharked` to see them.")
+        await ctx.send(f"❌ '{streamer_id}' is not a valid ID. IDs are numeric. Use `!streamers` to see them.")
         return
+
+    sid = int(streamer_id)
 
     try:
-        # Get list of suspended streamers and look up by ID
-        suspended = load_auto_suspended_streamers()
-
-        if not suspended:
-            await ctx.send("ℹ️ No streamers are currently suspended by the Shark.")
+        # Look up the streamer in Azuracast to verify they exist and get their name
+        all_streamers = get_all_streamers()
+        if all_streamers is None:
+            await ctx.send("❌ Failed to fetch streamers from Azuracast. Cannot verify ID. Check logs.")
             return
 
-        streamer_info = suspended.get(streamer_id)
+        target = None
+        for s in all_streamers:
+            if s.get('id') == sid:
+                target = s
+                break
 
-        if streamer_info is None:
-            await ctx.send(f"❌ No Shark-suspended streamer found with ID `{streamer_id}`. "
-                         f"Use `!sharked` to see who the Shark has suspended.")
+        if target is None:
+            await ctx.send(f"❌ No streamer found with ID `{sid}`. Use `!streamers` to see valid IDs.")
             return
 
-        sid = int(streamer_id)
+        name = target.get('display_name', f'ID {sid}')
 
-        # Re-enable the streamer via Azuracast API
+        if target.get('is_active', True):
+            await ctx.send(f"ℹ️ **{name}** (ID: `{sid}`) is not currently suspended.")
+            return
+
         if reactivate_streamer(sid):
             remove_auto_suspended_streamer(sid)
-            await ctx.send(f"✅ Successfully re-enabled '{streamer_info['name']}' (ID: `{streamer_id}`)! "
-                         f"They were suspended: {streamer_info.get('reason', 'for silence')}.")
-            print(f"Streamer {streamer_info['name']} (ID: {streamer_id}) re-enabled by {ctx.author}")
+            await ctx.send(f"✅ Successfully re-enabled **{name}** (ID: `{sid}`)!")
+            print(f"Streamer {name} (ID: {sid}) re-enabled by {ctx.author}")
         else:
-            await ctx.send(f"❌ Failed to re-enable '{streamer_info['name']}' (ID: `{streamer_id}`) via Azuracast API. "
-                         f"Check logs for details.")
+            await ctx.send(f"❌ Failed to re-enable **{name}** (ID: `{sid}`) via Azuracast API. Check logs.")
 
     except Exception as e:
         await ctx.send(f"❌ Error: {str(e)}")
-        print(f"Error in letin command: {e}")
+        print(f"Error in unshark command: {e}")
 
 @bot.command(name='shark-status', aliases=['sharkstatus', 'status'])
 async def shark_status(ctx):
@@ -371,7 +372,7 @@ async def sharked(ctx):
             message += f"  ├ Suspended: {time_str}\n"
             message += f"  └ Reason: {reason}\n\n"
 
-        message += f"Use `!letin <id>` to re-enable a streamer by their ID."
+        message += f"Use `!unshark <id>` to re-enable a streamer by their ID."
 
         await ctx.send(message)
 

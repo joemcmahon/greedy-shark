@@ -10,7 +10,12 @@ It currently conforms to the standard used at most radio stations: a full two-mi
 why are we not broadcasting event.
 
 Greedy Shark, as it's currently implemented, is relatively restrained in what it does: It just pushes a notification
-to a Discord channel to alert us that hey, something is up.
+to a Discord channel to alert us that hey, something is up; there are commands (!shark/!unshark) to allow a human
+to suspend a streamer or enable them.
+
+This also lets the Shark double as a gatekeeper for guest streamers: add them to Azuracast and suspend them; the
+Shark can list the users and then a Discord admin can !unshark them to allow them to broadcast, and !shark them
+again at the end of their slot.
 
 ## Using it
 If you want to use the Greedy Shark, you'll need to set up a `.env` file for it. Fill out the following values:
@@ -32,7 +37,7 @@ If you want to use the Greedy Shark, you'll need to set up a `.env` file for it.
     AZURACAST_API_KEY=<your API key from Azuracast>
     AZURACAST_STATION_ID=<your station shortcode>
 
-    # Discord Bot Configuration (for grace period commands)
+    # Discord Bot Configuration
     DISCORD_BOT_TOKEN=<your bot token from Discord Developer Portal>
     DISCORD_CHANNEL_ID=<your Discord channel ID>
     GRACE_PERIOD_MINUTES=15
@@ -53,7 +58,7 @@ If you want to use the Greedy Shark, you'll need to set up a `.env` file for it.
 `AZURACAST_API_KEY` - An API key created in Azuracast with permissions for "View Station Reports" and "Manage Station Broadcasting".
 `AZURACAST_STATION_ID` - Your station's shortcode or ID from Azuracast.
 
-`DISCORD_BOT_TOKEN` - A Discord bot token from the Discord Developer Portal (required for grace period commands).
+`DISCORD_BOT_TOKEN` - A Discord bot token from the Discord Developer Portal (required for all bot commands).
 `DISCORD_CHANNEL_ID` - The Discord channel ID where the bot should listen for commands.
 `GRACE_PERIOD_MINUTES` - Duration in minutes for the grace period (default: 15).
 
@@ -61,40 +66,31 @@ If you want to use the Greedy Shark, you'll need to set up a `.env` file for it.
 
 Greedy Shark uses a state machine to monitor your stream with two different rulesets:
 
-### No Streamer Connected (2-minute rule)
-When no live streamer/DJ is connected to Azuracast, the Shark applies the standard broadcast rule: **2 consecutive minutes of silence triggers an alert**. This catches situations where your AutoDJ has failed or the stream has gone down.
+### 2-minute rule
+When no live streamer/DJ is connected to Azuracast, the Shark applies the standard broadcast rule: **2 consecutive minutes of silence triggers an alert**. This catches situations where your AutoDJ has failed or the stream has gone down, the streamer has fallen asleep or walked away, forgetting they're still connected (it happens!).
+
+In these cases, a Discord `@Staff` member can knock the streamer offline with a `!shark` command. This tells Azuracast to suspend the streamer until they're reinstated via a `!unshark` command.
 
 ### Streamer Connected (10-minute rule)
-When a live streamer is connected, the Shark switches to a more lenient rule to accommodate natural pauses, technical adjustments, or brief breaks:
+When a live streamer is connected, the Shark switches to a more lenient rule:
 
-- **8 minutes of silence**: Sends a warning message "Forced disconnect imminent" to give the streamer a 2-minute heads-up
-- **10 minutes of silence**: Automatically suspends the streamer's account in Azuracast (preventing auto-reconnect) and sends a "Streamer forced off" notification
+- **4 minutes of silence**: Sends a warning "Action may be needed soon" with a reminder to use `!shark <id>` if needed
+- **10 minutes of silence**: Sends a staff alert that action is required, pointing to `!streamers` then `!shark <id>`
+
+The Shark does not auto-suspend when a streamer is connected — staff use `!shark` to manually suspend when they judge it necessary.
 
 ### Audio Detection Resets Timer
 Any time audio is detected, all timers reset. This means streamers can make "please stand by" announcements or play brief audio clips to keep their connection active while working through issues.
 
-### Grace Period (Optional)
-If you run the optional Discord bot (`grace_period_bot.py`), streamers or staff can use the `!working-on-it` command to activate a grace period. During this time:
+### Re-enabling Suspended Streamers
+When a streamer is suspended via `!shark`, the Shark tracks this. Staff can manage these suspensions with Discord commands:
 
-- No warnings or suspensions occur
-- The monitor continues checking audio but doesn't take action
-- Grace period expires after the configured duration (default 15 minutes)
-- Can be renewed by running the command again
-- Can be cancelled early with `!cancel-grace`
-- Check status with `!grace-status`
-
-This is useful when a streamer is experiencing technical difficulties but is actively working to resolve them.
-
-### Re-enabling Auto-Suspended Streamers
-When the Shark auto-suspends a streamer after 10 minutes of silence, it tracks this in a file. Staff can re-enable these streamers using Discord commands:
-
-- **`!sharked`** - List all streamers auto-suspended by the Shark (with timestamps and reasons)
-- **`!letin <username>`** - Re-enable a specific streamer that was auto-suspended
-
-**Important:** These commands only work on streamers that the Shark automatically suspended. Streamers manually suspended by staff through the Azuracast UI will not appear in `!sharked` and cannot be re-enabled with `!letin`. This prevents accidentally re-enabling someone suspended for policy violations.
+- **`!streamers`** - List all streamers registered in Azuracast and their ID number
+- **`!sharked`** - List all streamers currently suspended via `!shark`
+- **`!unshark <id>`** - Re-enable any suspended streamer by their Azuracast ID
 
 ### Getting Help
-Use `!shark-help` (or just `!help`) in Discord to see all available commands with usage examples.
+Use `!shark-help` (or `!sharkhelp`) in Discord to see all available commands with usage examples.
 
 ### State Transitions
 - When a streamer connects, the monitor switches from 2-minute to 10-minute mode
@@ -107,7 +103,7 @@ The silence detection algorithm looks for zero-amplitude signals. The signal lev
 
 ## Setting Up the Discord Bot
 
-To enable the grace period feature:
+To enable bot commands (`!shark`, `!unshark`, `!streamers`, grace period commands, etc.):
 
 1. Go to the [Discord Developer Portal](https://discord.com/developers/applications)
 2. Create a new application or use an existing one
@@ -139,11 +135,11 @@ docker-compose down
 This will:
 - Build the Docker image with all dependencies
 - Start the monitor and bot as separate containers
-- Share the grace period file between them
+- Share state files between them via volumes
 - Auto-restart on failures
 - Run in the background
 
-Both services share the `.grace_period_until` file via a shared volume, allowing the bot and monitor to communicate.
+Both services share `.grace_period_until`, `.auto_suspended_streamers`, and `.monitor_state` via shared volumes, allowing the bot and monitor to communicate.
 
 ## Running Tests
 
