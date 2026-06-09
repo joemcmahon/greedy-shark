@@ -61,15 +61,25 @@ In tests, pass `unittest.mock.Mock()` with canned return values. No stub class n
 
 ### `MonitorContext`
 
-Gains two required constructor parameters:
+Gains three required constructor parameters:
 
 ```python
 class MonitorContext:
-    def __init__(self, notifier: Notifier, azuracast: AzuracastClient):
+    def __init__(self, notifier: Notifier, azuracast: AzuracastClient,
+                 sample_fn: Callable[[str, int], bytes | None]):
         self.notifier = notifier
         self.azuracast = azuracast
+        self.sample_fn = sample_fn
         # ... existing fields unchanged
 ```
+
+`sample_fn` wraps `grab_audio_sample` — the ffmpeg call against the live stream. In production it is the real function; in tests it is a callable that returns pre-cooked WAV bytes for specific scenarios:
+
+- **Stream active:** return valid WAV bytes with non-zero amplitude
+- **Stream silent:** return valid WAV bytes with zero amplitude
+- **Stream unreachable:** return `None`
+
+This lets tests drive any audio condition without touching ffmpeg or a network. `grab_audio_sample` itself is unchanged but is no longer called directly from `monitor_loop`; instead `ctx.sample_fn(STREAM_URL, SAMPLE_DURATION)` is called.
 
 ### Functions updated
 
@@ -99,7 +109,7 @@ The following module-level functions are deleted — their logic moves into the 
 def monitor_loop():
     notifier = DiscordNotifier(DISCORD_WEBHOOK_URL, STAFF_ROLE_ID)
     client = AzuracastClient(AZURACAST_BASE_URL, AZURACAST_API_KEY, AZURACAST_STATION_ID)
-    ctx = MonitorContext(notifier=notifier, azuracast=client)
+    ctx = MonitorContext(notifier=notifier, azuracast=client, sample_fn=grab_audio_sample)
     ...
 ```
 
@@ -226,7 +236,7 @@ Add `pytest-asyncio` to `requirements.txt`. No other new test dependencies.
 |---|---|
 | `notifier.py` | New |
 | `azuracast_client.py` | New |
-| `monitor_stream.py` | Refactor — remove 6 functions, update MonitorContext, update callers |
+| `monitor_stream.py` | Refactor — remove 6 functions, update MonitorContext with notifier/azuracast/sample_fn, update callers |
 | `grace_period_bot.py` | Refactor — extract 9 handler functions, thin bot wrappers |
 | `test_monitor.py` | Update — remove patches, use FileNotifier + Mock client |
 | `test_bot.py` | New |
