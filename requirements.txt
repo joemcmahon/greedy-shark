@@ -6,4 +6,5 @@ python-dotenv
 discord.py
 pytest
 pytest-mock
+pytest-asyncio
 
