@@ -54,15 +54,8 @@ last_alert_time = 0
 import atexit
 import signal
 
-def exit_handler():
-    send_discord_message("Monitor has exited")
-
 def kill_handler(*args):
     sys.exit(0)
-
-atexit.register(exit_handler)
-signal.signal(signal.SIGINT, kill_handler)
-signal.signal(signal.SIGTERM, kill_handler)
 
 def send_discord_message(message):
     content = f"\U0001F988 **{message}**"
@@ -512,6 +505,9 @@ def save_monitor_state(ctx):
 
 
 def monitor_loop():
+    atexit.register(lambda: send_discord_message("Monitor has exited"))
+    signal.signal(signal.SIGINT, kill_handler)
+    signal.signal(signal.SIGTERM, kill_handler)
     send_discord_message("Greedy Shark is active")
 
     ctx = MonitorContext()
