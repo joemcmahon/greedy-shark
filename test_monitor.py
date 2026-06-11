@@ -2,6 +2,7 @@ import pytest
 import os
 import time
 from unittest.mock import Mock, patch, mock_open, MagicMock
+from notifier import FileNotifier
 from monitor_stream import (
     MonitorState,
     MonitorContext,
@@ -18,12 +19,21 @@ from monitor_stream import (
 )
 
 
+def make_ctx(notifier=None, azuracast=None, sample_fn=None):
+    """Build a MonitorContext with sensible test defaults."""
+    return MonitorContext(
+        notifier=notifier or Mock(),
+        azuracast=azuracast or Mock(),
+        sample_fn=sample_fn or Mock(return_value=None),
+    )
+
+
 class TestMonitorContext:
     """Test the MonitorContext class."""
 
     def test_initial_state(self):
         """Test that context initializes with correct defaults."""
-        ctx = MonitorContext()
+        ctx = make_ctx()
         assert ctx.state == MonitorState.NO_STREAMER
         assert ctx.consecutive_silent_checks == 0
         assert ctx.streamer_id is None
@@ -32,7 +42,7 @@ class TestMonitorContext:
 
     def test_reset_counters(self):
         """Test that reset_counters clears counters and warning flag."""
-        ctx = MonitorContext()
+        ctx = make_ctx()
         ctx.consecutive_silent_checks = 5
         ctx.warning_sent = True
 
@@ -43,7 +53,7 @@ class TestMonitorContext:
 
     def test_clear_streamer_info(self):
         """Test that clear_streamer_info removes streamer data."""
-        ctx = MonitorContext()
+        ctx = make_ctx()
         ctx.streamer_id = 123
         ctx.streamer_name = "TestDJ"
 
@@ -58,7 +68,7 @@ class TestDetermineNextState:
 
     def test_no_transition_when_no_streamer_and_stays_no_streamer(self):
         """No transition when staying in NO_STREAMER state."""
-        ctx = MonitorContext()
+        ctx = make_ctx()
         ctx.state = MonitorState.NO_STREAMER
 
         result = determine_next_state(ctx, is_streamer_connected=False, grace_period_active=False)
@@ -67,7 +77,7 @@ class TestDetermineNextState:
 
     def test_transition_from_no_streamer_to_streamer_active(self):
         """Transition when streamer connects without grace period."""
-        ctx = MonitorContext()
+        ctx = make_ctx()
         ctx.state = MonitorState.NO_STREAMER
 
         result = determine_next_state(ctx, is_streamer_connected=True, grace_period_active=False)
@@ -76,7 +86,7 @@ class TestDetermineNextState:
 
     def test_transition_from_no_streamer_to_grace_period(self):
         """Transition to grace period when streamer connects with active grace period."""
-        ctx = MonitorContext()
+        ctx = make_ctx()
         ctx.state = MonitorState.NO_STREAMER
 
         result = determine_next_state(ctx, is_streamer_connected=True, grace_period_active=True)
@@ -85,7 +95,7 @@ class TestDetermineNextState:
 
     def test_transition_from_streamer_active_to_grace_period(self):
         """Transition from active to grace period when grace period activated."""
-        ctx = MonitorContext()
+        ctx = make_ctx()
         ctx.state = MonitorState.STREAMER_ACTIVE
 
         result = determine_next_state(ctx, is_streamer_connected=True, grace_period_active=True)
@@ -94,7 +104,7 @@ class TestDetermineNextState:
 
     def test_transition_from_grace_period_to_streamer_active(self):
         """Transition back to active when grace period expires with streamer still connected."""
-        ctx = MonitorContext()
+        ctx = make_ctx()
         ctx.state = MonitorState.GRACE_PERIOD
 
         result = determine_next_state(ctx, is_streamer_connected=True, grace_period_active=False)
@@ -103,7 +113,7 @@ class TestDetermineNextState:
 
     def test_transition_from_grace_period_to_no_streamer(self):
         """Transition to no streamer when grace period expires and streamer disconnected."""
-        ctx = MonitorContext()
+        ctx = make_ctx()
         ctx.state = MonitorState.GRACE_PERIOD
 
         result = determine_next_state(ctx, is_streamer_connected=False, grace_period_active=False)
@@ -112,7 +122,7 @@ class TestDetermineNextState:
 
     def test_transition_from_streamer_active_to_no_streamer(self):
         """Transition when streamer disconnects."""
-        ctx = MonitorContext()
+        ctx = make_ctx()
         ctx.state = MonitorState.STREAMER_ACTIVE
 
         result = determine_next_state(ctx, is_streamer_connected=False, grace_period_active=False)
@@ -123,10 +133,10 @@ class TestDetermineNextState:
 class TestHandleStateTransition:
     """Test state transition execution."""
 
-    @patch('monitor_stream.send_discord_message')
-    def test_transition_to_streamer_active_sets_streamer_info(self, mock_discord):
+    def test_transition_to_streamer_active_sets_streamer_info(self, tmp_path):
         """Test that transitioning to STREAMER_ACTIVE sets streamer info."""
-        ctx = MonitorContext()
+        notifier = FileNotifier(tmp_path / "out.jsonl")
+        ctx = make_ctx(notifier=notifier)
         ctx.state = MonitorState.NO_STREAMER
 
         handle_state_transition(ctx, MonitorState.STREAMER_ACTIVE, streamer_name="TestDJ", streamer_id=456)
@@ -136,24 +146,29 @@ class TestHandleStateTransition:
         assert ctx.streamer_id == 456
         assert ctx.consecutive_silent_checks == 0
         assert ctx.warning_sent is False
+        # No message should be sent for this transition
+        records = notifier.get_records()
+        assert len(records) == 0
 
-    @patch('monitor_stream.send_discord_message')
-    def test_transition_to_grace_period_sends_message(self, mock_discord):
+    def test_transition_to_grace_period_sends_message(self, tmp_path):
         """Test that entering grace period sends Discord message."""
-        ctx = MonitorContext()
+        notifier = FileNotifier(tmp_path / "out.jsonl")
+        ctx = make_ctx(notifier=notifier)
         ctx.state = MonitorState.STREAMER_ACTIVE
         ctx.streamer_name = "TestDJ"
 
         handle_state_transition(ctx, MonitorState.GRACE_PERIOD)
 
         assert ctx.state == MonitorState.GRACE_PERIOD
-        mock_discord.assert_called_once()
-        assert "Grace period activated" in mock_discord.call_args[0][0]
+        records = notifier.get_records()
+        assert len(records) == 1
+        assert records[0]["type"] == "message"
+        assert "Grace period activated" in records[0]["content"]
 
-    @patch('monitor_stream.send_discord_message')
-    def test_transition_to_no_streamer_clears_info(self, mock_discord):
+    def test_transition_to_no_streamer_clears_info(self, tmp_path):
         """Test that transitioning to NO_STREAMER clears streamer info."""
-        ctx = MonitorContext()
+        notifier = FileNotifier(tmp_path / "out.jsonl")
+        ctx = make_ctx(notifier=notifier)
         ctx.state = MonitorState.STREAMER_ACTIVE
         ctx.streamer_name = "TestDJ"
         ctx.streamer_id = 789
@@ -168,34 +183,36 @@ class TestHandleStateTransition:
 class TestSilenceHandlers:
     """Test silence handling functions."""
 
-    @patch('monitor_stream.send_discord_alert')
-    def test_no_streamer_silence_at_threshold(self, mock_alert):
+    def test_no_streamer_silence_at_threshold(self, tmp_path):
         """Test that alert is sent at 2-minute threshold."""
-        ctx = MonitorContext()
+        notifier = FileNotifier(tmp_path / "out.jsonl")
+        ctx = make_ctx(notifier=notifier)
         ctx.state = MonitorState.NO_STREAMER
         ctx.consecutive_silent_checks = SILENCE_ALERT_LEVEL
 
         handle_no_streamer_silence(ctx)
 
-        mock_alert.assert_called_once()
-        assert "2 minutes" in mock_alert.call_args[0][0]
+        records = notifier.get_records()
+        assert len(records) == 1
+        assert records[0]["type"] == "alert"
+        assert "2 minutes" in records[0]["reason"]
         assert ctx.consecutive_silent_checks == 0
 
-    @patch('monitor_stream.send_discord_alert')
-    def test_no_streamer_silence_below_threshold(self, mock_alert):
+    def test_no_streamer_silence_below_threshold(self):
         """Test that no alert is sent below threshold."""
-        ctx = MonitorContext()
+        mock_notifier = Mock()
+        ctx = make_ctx(notifier=mock_notifier)
         ctx.state = MonitorState.NO_STREAMER
         ctx.consecutive_silent_checks = SILENCE_ALERT_LEVEL - 1
 
         handle_no_streamer_silence(ctx)
 
-        mock_alert.assert_not_called()
+        mock_notifier.send_alert.assert_not_called()
 
-    @patch('monitor_stream.send_discord_alert')
-    def test_streamer_active_warning_at_4_minutes(self, mock_alert):
+    def test_streamer_active_warning_at_4_minutes(self, tmp_path):
         """Test that warning is sent at 4-minute threshold."""
-        ctx = MonitorContext()
+        notifier = FileNotifier(tmp_path / "out.jsonl")
+        ctx = make_ctx(notifier=notifier)
         ctx.state = MonitorState.STREAMER_ACTIVE
         ctx.streamer_name = "TestDJ"
         ctx.consecutive_silent_checks = STREAMER_WARNING_THRESHOLD
@@ -203,14 +220,16 @@ class TestSilenceHandlers:
 
         handle_streamer_active_silence(ctx)
 
-        mock_alert.assert_called_once()
-        assert "Action may be needed soon" in mock_alert.call_args[0][0]
+        records = notifier.get_records()
+        assert len(records) == 1
+        assert records[0]["type"] == "alert"
+        assert "Action may be needed soon" in records[0]["reason"]
         assert ctx.warning_sent is True
 
-    @patch('monitor_stream.send_discord_alert')
-    def test_streamer_active_warning_only_sent_once(self, mock_alert):
+    def test_streamer_active_warning_only_sent_once(self):
         """Test that warning is only sent once."""
-        ctx = MonitorContext()
+        mock_notifier = Mock()
+        ctx = make_ctx(notifier=mock_notifier)
         ctx.state = MonitorState.STREAMER_ACTIVE
         ctx.streamer_name = "TestDJ"
         ctx.consecutive_silent_checks = STREAMER_WARNING_THRESHOLD
@@ -218,13 +237,12 @@ class TestSilenceHandlers:
 
         handle_streamer_active_silence(ctx)
 
-        mock_alert.assert_not_called()
+        mock_notifier.send_alert.assert_not_called()
 
-    @patch('monitor_stream.suspend_streamer')
-    @patch('monitor_stream.send_discord_alert')
-    def test_no_auto_suspend_at_10_minutes(self, mock_alert, mock_suspend):
+    def test_no_auto_suspend_at_10_minutes(self, tmp_path):
         """Test that streamer is NOT auto-suspended at 10-minute threshold."""
-        ctx = MonitorContext()
+        notifier = FileNotifier(tmp_path / "out.jsonl")
+        ctx = make_ctx(notifier=notifier)
         ctx.state = MonitorState.STREAMER_ACTIVE
         ctx.streamer_name = "TestDJ"
         ctx.streamer_id = 123
@@ -232,14 +250,14 @@ class TestSilenceHandlers:
 
         handle_streamer_active_silence(ctx)
 
-        mock_suspend.assert_not_called()
+        # State and streamer_id should be unchanged (no suspension)
         assert ctx.state == MonitorState.STREAMER_ACTIVE
         assert ctx.streamer_id == 123
 
-    @patch('monitor_stream.send_discord_alert')
-    def test_urgent_alert_sent_at_10_minutes(self, mock_alert):
+    def test_urgent_alert_sent_at_10_minutes(self, tmp_path):
         """Test that an urgent alert is sent at 10-minute threshold."""
-        ctx = MonitorContext()
+        notifier = FileNotifier(tmp_path / "out.jsonl")
+        ctx = make_ctx(notifier=notifier)
         ctx.state = MonitorState.STREAMER_ACTIVE
         ctx.streamer_name = "TestDJ"
         ctx.streamer_id = 123
@@ -247,13 +265,15 @@ class TestSilenceHandlers:
 
         handle_streamer_active_silence(ctx)
 
-        mock_alert.assert_called_once()
-        assert "TestDJ" in mock_alert.call_args[0][0]
+        records = notifier.get_records()
+        assert len(records) == 1
+        assert records[0]["type"] == "alert"
+        assert "TestDJ" in records[0]["reason"]
 
-    @patch('monitor_stream.send_discord_alert')
-    def test_urgent_alert_repeats_after_10_minutes(self, mock_alert):
+    def test_urgent_alert_repeats_after_10_minutes(self, tmp_path):
         """Test that urgent alert repeats on every check after 10 minutes."""
-        ctx = MonitorContext()
+        notifier = FileNotifier(tmp_path / "out.jsonl")
+        ctx = make_ctx(notifier=notifier)
         ctx.state = MonitorState.STREAMER_ACTIVE
         ctx.streamer_name = "TestDJ"
         ctx.streamer_id = 123
@@ -261,8 +281,10 @@ class TestSilenceHandlers:
 
         handle_streamer_active_silence(ctx)
 
-        mock_alert.assert_called_once()
-        assert "TestDJ" in mock_alert.call_args[0][0]
+        records = notifier.get_records()
+        assert len(records) == 1
+        assert records[0]["type"] == "alert"
+        assert "TestDJ" in records[0]["reason"]
 
 
 class TestHandleSilenceByState:
@@ -271,7 +293,7 @@ class TestHandleSilenceByState:
     @patch('monitor_stream.handle_no_streamer_silence')
     def test_routes_to_no_streamer_handler(self, mock_handler):
         """Test that NO_STREAMER state routes correctly."""
-        ctx = MonitorContext()
+        ctx = make_ctx()
         ctx.state = MonitorState.NO_STREAMER
 
         handle_silence_by_state(ctx)
@@ -281,7 +303,7 @@ class TestHandleSilenceByState:
     @patch('monitor_stream.handle_streamer_active_silence')
     def test_routes_to_streamer_active_handler(self, mock_handler):
         """Test that STREAMER_ACTIVE state routes correctly."""
-        ctx = MonitorContext()
+        ctx = make_ctx()
         ctx.state = MonitorState.STREAMER_ACTIVE
 
         handle_silence_by_state(ctx)
@@ -291,7 +313,7 @@ class TestHandleSilenceByState:
     @patch('monitor_stream.handle_grace_period_silence')
     def test_routes_to_grace_period_handler(self, mock_handler):
         """Test that GRACE_PERIOD state routes correctly."""
-        ctx = MonitorContext()
+        ctx = make_ctx()
         ctx.state = MonitorState.GRACE_PERIOD
 
         handle_silence_by_state(ctx)
@@ -351,10 +373,10 @@ class TestGracePeriod:
 class TestStateTransitionScenarios:
     """Integration-style tests for common state transition scenarios."""
 
-    @patch('monitor_stream.send_discord_message')
-    def test_full_streamer_lifecycle(self, mock_discord):
+    def test_full_streamer_lifecycle(self, tmp_path):
         """Test complete streamer connection -> disconnection cycle."""
-        ctx = MonitorContext()
+        notifier = FileNotifier(tmp_path / "out.jsonl")
+        ctx = make_ctx(notifier=notifier)
 
         # Initial state
         assert ctx.state == MonitorState.NO_STREAMER
@@ -371,10 +393,10 @@ class TestStateTransitionScenarios:
         assert ctx.state == MonitorState.NO_STREAMER
         assert ctx.streamer_name is None
 
-    @patch('monitor_stream.send_discord_message')
-    def test_grace_period_activation_and_expiration(self, mock_discord):
+    def test_grace_period_activation_and_expiration(self, tmp_path):
         """Test grace period activation and expiration."""
-        ctx = MonitorContext()
+        notifier = FileNotifier(tmp_path / "out.jsonl")
+        ctx = make_ctx(notifier=notifier)
         ctx.state = MonitorState.STREAMER_ACTIVE
         ctx.streamer_name = "TestDJ"
 

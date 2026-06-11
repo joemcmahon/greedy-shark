@@ -13,6 +13,9 @@ from dotenv import load_dotenv
 from enum import Enum
 from datetime import datetime
 
+from azuracast_client import AzuracastClient
+from notifier import DiscordNotifier, Notifier
+
 # Config from environment
 load_dotenv()
 STREAM_URL = os.getenv("STREAM_URL")
@@ -49,181 +52,11 @@ class MonitorState(Enum):
     STREAMER_ACTIVE = "streamer_active"   # Streamer connected, 10-minute rule
     GRACE_PERIOD = "grace_period"         # Future: streamer acknowledged issues
 
-last_alert_time = 0
-
 import atexit
 import signal
 
 def kill_handler(*args):
     sys.exit(0)
-
-def send_discord_message(message):
-    content = f"\U0001F988 **{message}**"
-    payload = {
-            "content": content,
-            "allowed_mentions": {
-                "roles": [STAFF_ROLE_ID]
-                }
-            }
-    try:
-        resp = requests.post(DISCORD_WEBHOOK_URL, json=payload)
-        if resp.status_code != 204:
-            logging.warning("Discord alert failed: %s", resp.text)
-    except Exception as e:
-        logging.error("Error sending Discord alert: %s", e)
-
-def send_discord_alert(reason, rms=None, variance=None, stderr=""):
-    global last_alert_time
-    now = time.time()
-    if now - last_alert_time < ALERT_COOLDOWN_SECONDS:
-        logging.info("Skipping Discord alert due to cooldown.")
-        return
-    last_alert_time = now
-
-    content = f"<@&{STAFF_ROLE_ID}> \U0001F988 \U0001F6A8 **Stream issue detected**\n**Reason**: {reason}"
-    if rms is not None:
-        content += f"\n**RMS**: {rms:.2f}"
-    if variance is not None:
-        content += f"\n**Variance**: {variance:.2f}"
-    if stderr:
-        content += f"\n**FFmpeg Error**:\n```{stderr.strip()[:500]}```"
-
-    payload = {
-            "content": content,
-            "allowed_mentions": {
-                "roles": [STAFF_ROLE_ID]
-                }
-            }
-    try:
-        resp = requests.post(DISCORD_WEBHOOK_URL, json=payload)
-        if resp.status_code != 204:
-            logging.warning("Discord alert failed: %s", resp.text)
-    except Exception as e:
-        logging.error("Error sending Discord alert: %s", e)
-
-
-def check_streamer_connected():
-    """
-    Check if a live streamer/DJ is currently connected via Azuracast API.
-    Returns tuple: (is_connected: bool, streamer_name: str or None, streamer_id: int or None)
-    """
-    if not AZURACAST_BASE_URL or not AZURACAST_API_KEY or not AZURACAST_STATION_ID:
-        logging.warning("Azuracast API not configured. Skipping streamer check.")
-        return False, None, None
-
-    try:
-        url = f"{AZURACAST_BASE_URL}/api/nowplaying/{AZURACAST_STATION_ID}"
-        headers = {"X-API-Key": AZURACAST_API_KEY}
-
-        resp = requests.get(url, headers=headers, timeout=10)
-        if resp.status_code != 200:
-            logging.error(f"Azuracast API error: {resp.status_code} - {resp.text}")
-            return False, None, None
-
-        data = resp.json()
-        live_info = data.get("live", {})
-        is_live = live_info.get("is_live", False)
-        streamer_name = live_info.get("streamer_name")
-
-        # Try to get streamer ID from the broadcaster info if available
-        streamer_id = live_info.get("broadcaster_id")
-
-        logging.info(f"Streamer check: is_live={is_live}, streamer={streamer_name}, id={streamer_id}")
-        return is_live, streamer_name, streamer_id
-
-    except Exception as e:
-        logging.error(f"Error checking streamer status: {e}")
-        return False, None, None
-
-
-def suspend_streamer(streamer_id):
-    """
-    Suspend a streamer account via Azuracast API.
-    This prevents auto-reconnect by disabling the account entirely.
-    Returns True if successful, False otherwise.
-    """
-    if not AZURACAST_BASE_URL or not AZURACAST_API_KEY or not AZURACAST_STATION_ID:
-        logging.error("Azuracast API not configured. Cannot suspend streamer.")
-        return False
-
-    if not streamer_id:
-        logging.error("No streamer ID provided. Cannot suspend.")
-        return False
-
-    try:
-        # Suspend the streamer account to prevent reconnection
-        streamer_url = f"{AZURACAST_BASE_URL}/api/station/{AZURACAST_STATION_ID}/streamer/{streamer_id}"
-        headers = {"X-API-Key": AZURACAST_API_KEY}
-        payload = {"is_active": False}
-
-        resp = requests.put(streamer_url, headers=headers, json=payload, timeout=10)
-        if resp.status_code in [200, 204]:
-            logging.info(f"Successfully suspended streamer account ID {streamer_id}")
-            return True
-        else:
-            logging.error(f"Failed to suspend streamer: {resp.status_code} - {resp.text}")
-            return False
-
-    except Exception as e:
-        logging.error(f"Error suspending streamer: {e}")
-        return False
-
-
-def reactivate_streamer(streamer_id):
-    """
-    Re-enable a streamer account via Azuracast API.
-    Returns True if successful, False otherwise.
-    """
-    if not AZURACAST_BASE_URL or not AZURACAST_API_KEY or not AZURACAST_STATION_ID:
-        logging.error("Azuracast API not configured. Cannot reactivate streamer.")
-        return False
-
-    if not streamer_id:
-        logging.error("No streamer ID provided. Cannot reactivate.")
-        return False
-
-    try:
-        # Re-enable the streamer account
-        streamer_url = f"{AZURACAST_BASE_URL}/api/station/{AZURACAST_STATION_ID}/streamer/{streamer_id}"
-        headers = {"X-API-Key": AZURACAST_API_KEY}
-        payload = {"is_active": True}
-
-        resp = requests.put(streamer_url, headers=headers, json=payload, timeout=10)
-        if resp.status_code in [200, 204]:
-            logging.info(f"Successfully reactivated streamer account ID {streamer_id}")
-            return True
-        else:
-            logging.error(f"Failed to reactivate streamer: {resp.status_code} - {resp.text}")
-            return False
-
-    except Exception as e:
-        logging.error(f"Error reactivating streamer: {e}")
-        return False
-
-
-def get_all_streamers():
-    """
-    Get list of all streamers from Azuracast API.
-    Returns list of streamers with id and display_name, or None on error.
-    """
-    if not AZURACAST_BASE_URL or not AZURACAST_API_KEY or not AZURACAST_STATION_ID:
-        logging.error("Azuracast API not configured. Cannot fetch streamers.")
-        return None
-
-    try:
-        streamers_url = f"{AZURACAST_BASE_URL}/api/station/{AZURACAST_STATION_ID}/streamers"
-        headers = {"X-API-Key": AZURACAST_API_KEY}
-
-        resp = requests.get(streamers_url, headers=headers, timeout=10)
-        if resp.status_code == 200:
-            return resp.json()
-        else:
-            logging.error(f"Failed to fetch streamers: {resp.status_code} - {resp.text}")
-            return None
-
-    except Exception as e:
-        logging.error(f"Error fetching streamers: {e}")
-        return None
 
 
 def check_grace_period_active():
@@ -357,34 +190,38 @@ def grab_audio_sample(url, duration):
         logging.error(f"Exception running ffmpeg: {e}")
         return None
 
-def analyze_audio(wav_bytes):
+
+def analyze_audio(wav_bytes: bytes) -> tuple[bool, dict | None]:
+    """Returns (is_active, alert_info). alert_info is None when audio is present."""
     audio = AudioSegment.from_file(BytesIO(wav_bytes), format="wav")
     samples = np.array(audio.get_array_of_samples()).astype(float)
 
     if len(samples) == 0:
-        send_discord_alert("Audio sample is empty.")
-        return False
+        return False, {"reason": "Audio sample is empty.", "rms": None, "variance": None}
 
-    rms = np.sqrt(np.mean(samples**2))
-    variance = np.var(samples)
-
+    rms = float(np.sqrt(np.mean(samples**2)))
+    variance = float(np.var(samples))
     logging.info(f"Analyzed audio - RMS: {rms:.2f}, Variance: {variance:.2f}")
 
     if np.max(np.abs(samples)) == 0:
-        send_discord_alert("Stream is completely silent (zero amplitude)", rms, variance)
-        return False
+        return False, {"reason": "Stream is completely silent (zero amplitude)",
+                       "rms": rms, "variance": variance}
 
-    return True
+    return True, None
+
 
 SILENCE_ALERT_LEVEL = 2 # 2 x 60s = 2 minutes (no streamer threshold)
 STREAMER_WARNING_THRESHOLD = 4  # 4 x 60s = 4 minutes
 STREAMER_SUSPEND_THRESHOLD = 10  # 10 x 60s = 10 minutes
 
-consecutive_silent_checks = 0
 
 class MonitorContext:
-    """Holds the state machine context and variables."""
-    def __init__(self):
+    """Holds the state machine context and injectable dependencies."""
+    def __init__(self, notifier: Notifier, azuracast: AzuracastClient,
+                 sample_fn) -> None:
+        self.notifier = notifier
+        self.azuracast = azuracast
+        self.sample_fn = sample_fn
         self.state = MonitorState.NO_STREAMER
         self.consecutive_silent_checks = 0
         self.streamer_id = None
@@ -392,12 +229,10 @@ class MonitorContext:
         self.warning_sent = False
 
     def reset_counters(self):
-        """Reset silence counters and warning flag."""
         self.consecutive_silent_checks = 0
         self.warning_sent = False
 
     def clear_streamer_info(self):
-        """Clear current streamer information."""
         self.streamer_id = None
         self.streamer_name = None
 
@@ -436,10 +271,10 @@ def handle_state_transition(ctx, new_state, streamer_name=None, streamer_id=None
 
     # Handle transition-specific actions
     if new_state == MonitorState.GRACE_PERIOD and previous_state == MonitorState.STREAMER_ACTIVE:
-        send_discord_message(f"Grace period activated for '{ctx.streamer_name}'. Monitoring paused.")
+        ctx.notifier.send_message(f"Grace period activated for '{ctx.streamer_name}'. Monitoring paused.")
 
     elif new_state == MonitorState.STREAMER_ACTIVE and previous_state == MonitorState.GRACE_PERIOD:
-        send_discord_message(f"Grace period expired for '{ctx.streamer_name}'. Normal monitoring resumed.")
+        ctx.notifier.send_message(f"Grace period expired for '{ctx.streamer_name}'. Normal monitoring resumed.")
 
     elif new_state == MonitorState.STREAMER_ACTIVE and previous_state == MonitorState.NO_STREAMER:
         ctx.streamer_id = streamer_id
@@ -459,18 +294,21 @@ def handle_state_transition(ctx, new_state, streamer_name=None, streamer_id=None
 def handle_no_streamer_silence(ctx):
     """Handle silence detection when no streamer is connected."""
     if ctx.consecutive_silent_checks == SILENCE_ALERT_LEVEL:
-        send_discord_alert("🚨 **Stream silent for 2 minutes!** (No streamer connected)")
+        ctx.notifier.send_alert("🚨 **Stream silent for 2 minutes!** (No streamer connected)")
         ctx.consecutive_silent_checks = 0
 
 
 def handle_streamer_active_silence(ctx):
     """Handle silence detection when a streamer is actively connected."""
     if ctx.consecutive_silent_checks == STREAMER_WARNING_THRESHOLD and not ctx.warning_sent:
-        send_discord_alert(f"⚠️ **Action may be needed soon** - Streamer '{ctx.streamer_name}' has been silent for {STREAMER_WARNING_THRESHOLD} minutes. Use `!shark <id>` to suspend if needed.")
+        ctx.notifier.send_alert(
+            f"⚠️ **Action may be needed soon** - Streamer '{ctx.streamer_name}' has been silent "
+            f"for {STREAMER_WARNING_THRESHOLD} minutes. Use `!shark <id>` to suspend if needed.")
         ctx.warning_sent = True
-
     elif ctx.consecutive_silent_checks >= STREAMER_SUSPEND_THRESHOLD:
-        send_discord_alert(f"🚨 **Staff action required** - Streamer '{ctx.streamer_name}' has been silent for {ctx.consecutive_silent_checks} minutes. Use `!streamers` then `!shark <id>` to suspend.")
+        ctx.notifier.send_alert(
+            f"🚨 **Staff action required** - Streamer '{ctx.streamer_name}' has been silent "
+            f"for {ctx.consecutive_silent_checks} minutes. Use `!streamers` then `!shark <id>` to suspend.")
 
 
 def handle_grace_period_silence(ctx):
@@ -505,46 +343,44 @@ def save_monitor_state(ctx):
 
 
 def monitor_loop():
-    atexit.register(lambda: send_discord_message("Monitor has exited"))
+    notifier = DiscordNotifier(DISCORD_WEBHOOK_URL, STAFF_ROLE_ID)
+    client = AzuracastClient(AZURACAST_BASE_URL, AZURACAST_API_KEY, AZURACAST_STATION_ID)
+    ctx = MonitorContext(notifier=notifier, azuracast=client, sample_fn=grab_audio_sample)
+
+    atexit.register(lambda: notifier.send_message("Monitor has exited"))
     signal.signal(signal.SIGINT, kill_handler)
     signal.signal(signal.SIGTERM, kill_handler)
-    send_discord_message("Greedy Shark is active")
 
-    ctx = MonitorContext()
+    notifier.send_message("Greedy Shark is active")
 
     while True:
         logging.info(f"🔁 Checking stream... [State: {ctx.state.value}]")
 
-        # Check external conditions
-        is_streamer_connected, streamer_name, streamer_id = check_streamer_connected()
+        is_streamer_connected, streamer_name, streamer_id = ctx.azuracast.check_streamer_connected()
         grace_period_active = check_grace_period_active()
 
-        # Determine and execute state transitions
         new_state = determine_next_state(ctx, is_streamer_connected, grace_period_active)
         if new_state:
             handle_state_transition(ctx, new_state, streamer_name, streamer_id)
 
-        # Sample and analyze audio
-        wav_bytes = grab_audio_sample(STREAM_URL, SAMPLE_DURATION)
+        wav_bytes = ctx.sample_fn(STREAM_URL, SAMPLE_DURATION)
 
         if wav_bytes:
-            is_active = analyze_audio(wav_bytes)
+            is_active, alert_info = analyze_audio(wav_bytes)
             if is_active:
                 logging.info("✅ Stream is active and broadcasting.")
                 ctx.reset_counters()
             else:
                 ctx.consecutive_silent_checks += 1
+                if alert_info:
+                    ctx.notifier.send_alert(**alert_info)
                 logging.warning(f"⚠️ Stream appears silent or inactive. ({ctx.consecutive_silent_checks} checks)")
         else:
             ctx.consecutive_silent_checks += 1
             logging.error(f"❌ Failed to retrieve audio sample. ({ctx.consecutive_silent_checks} checks)")
 
-        # Handle silence based on current state
         handle_silence_by_state(ctx)
-
-        # Save current state for bot access
         save_monitor_state(ctx)
-
         time.sleep(CHECK_INTERVAL_SECONDS)
 
 if __name__ == "__main__":
