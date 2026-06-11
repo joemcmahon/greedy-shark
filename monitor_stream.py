@@ -193,6 +193,8 @@ def grab_audio_sample(url, duration):
 
 def analyze_audio(wav_bytes: bytes) -> tuple[bool, dict | None]:
     """Returns (is_active, alert_info). alert_info is None when audio is present."""
+    if not wav_bytes:
+        return False, {"reason": "No audio data received.", "rms": None, "variance": None}
     audio = AudioSegment.from_file(BytesIO(wav_bytes), format="wav")
     samples = np.array(audio.get_array_of_samples()).astype(float)
 
