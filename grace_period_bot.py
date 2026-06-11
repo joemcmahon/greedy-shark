@@ -366,7 +366,7 @@ async def grace_status(ctx):
         return
     await handle_grace_status(ctx.send)
 
-@bot.command(name='unshark', aliases=['letin', 'let-in'])
+@bot.command(name='unshark')
 async def unshark(ctx, streamer_id: str = None):
     if ctx.channel.id != DISCORD_CHANNEL_ID:
         return
