@@ -22,10 +22,7 @@ class DiscordNotifier:
         self._alert_cooldown: float = float(os.getenv("ALERT_COOLDOWN", 600))
 
     def send_message(self, message: str) -> None:
-        payload = {
-            "content": f"\U0001F988 **{message}**",
-            "allowed_mentions": {"roles": [self.staff_role_id]},
-        }
+        payload = {"content": f"\U0001F988 **{message}**"}
         try:
             resp = requests.post(self.webhook_url, json=payload)
             if resp.status_code != 204:
