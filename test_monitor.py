@@ -13,6 +13,9 @@ from monitor_stream import (
     handle_grace_period_silence,
     handle_silence_by_state,
     check_grace_period_active,
+    load_auto_suspended_streamers,
+    save_auto_suspended_streamers,
+    check_and_fix_suspended_file_path,
     SILENCE_ALERT_LEVEL,
     STREAMER_WARNING_THRESHOLD,
     STREAMER_SUSPEND_THRESHOLD
@@ -409,6 +412,70 @@ class TestStateTransitionScenarios:
         new_state = determine_next_state(ctx, is_streamer_connected=True, grace_period_active=False)
         handle_state_transition(ctx, new_state)
         assert ctx.state == MonitorState.STREAMER_ACTIVE
+
+
+# ---------------------------------------------------------------------------
+# load/save_auto_suspended_streamers — persistence guard tests
+# ---------------------------------------------------------------------------
+
+class TestAutoSuspendedPersistence:
+    def test_load_returns_empty_when_file_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("monitor_stream.AUTO_SUSPENDED_FILE", str(tmp_path / "suspended.json"))
+        assert load_auto_suspended_streamers() == {}
+
+    def test_load_returns_data_from_file(self, tmp_path, monkeypatch):
+        f = tmp_path / "suspended.json"
+        f.write_text('{"42": {"name": "TestDJ", "suspended_at": "2026-01-01T00:00:00", "reason": "test"}}')
+        monkeypatch.setattr("monitor_stream.AUTO_SUSPENDED_FILE", str(f))
+        result = load_auto_suspended_streamers()
+        assert result["42"]["name"] == "TestDJ"
+
+    def test_load_raises_if_path_is_directory(self, tmp_path, monkeypatch):
+        d = tmp_path / "suspended.json"
+        d.mkdir()
+        monkeypatch.setattr("monitor_stream.AUTO_SUSPENDED_FILE", str(d))
+        with pytest.raises(RuntimeError, match="is a directory"):
+            load_auto_suspended_streamers()
+
+    def test_save_raises_if_path_is_directory(self, tmp_path, monkeypatch):
+        d = tmp_path / "suspended.json"
+        d.mkdir()
+        monkeypatch.setattr("monitor_stream.AUTO_SUSPENDED_FILE", str(d))
+        with pytest.raises(RuntimeError, match="is a directory"):
+            save_auto_suspended_streamers({"42": {"name": "TestDJ"}})
+
+
+# ---------------------------------------------------------------------------
+# check_and_fix_suspended_file_path — startup guard
+# ---------------------------------------------------------------------------
+
+class TestCheckAndFixSuspendedFilePath:
+    def test_no_op_when_path_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("monitor_stream.AUTO_SUSPENDED_FILE", str(tmp_path / "suspended.json"))
+        check_and_fix_suspended_file_path()  # must not raise or crash
+
+    def test_no_op_when_path_is_file(self, tmp_path, monkeypatch):
+        f = tmp_path / "suspended.json"
+        f.write_text("{}")
+        monkeypatch.setattr("monitor_stream.AUTO_SUSPENDED_FILE", str(f))
+        check_and_fix_suspended_file_path()
+        assert f.exists()
+
+    def test_removes_rogue_directory(self, tmp_path, monkeypatch):
+        d = tmp_path / "suspended.json"
+        d.mkdir()
+        monkeypatch.setattr("monitor_stream.AUTO_SUSPENDED_FILE", str(d))
+        check_and_fix_suspended_file_path()
+        assert not d.exists()
+
+    def test_logs_warning_when_removing_directory(self, tmp_path, monkeypatch, caplog):
+        import logging
+        d = tmp_path / "suspended.json"
+        d.mkdir()
+        monkeypatch.setattr("monitor_stream.AUTO_SUSPENDED_FILE", str(d))
+        with caplog.at_level(logging.WARNING):
+            check_and_fix_suspended_file_path()
+        assert any("directory" in r.message.lower() for r in caplog.records)
 
 
 if __name__ == '__main__':

@@ -14,6 +14,7 @@ from monitor_stream import (
     load_auto_suspended_streamers,
     remove_auto_suspended_streamer,
     add_auto_suspended_streamer,
+    check_and_fix_suspended_file_path,
     MONITOR_STATE_FILE,
 )
 
@@ -65,6 +66,10 @@ async def handle_shark_help(send_fn, grace_minutes=GRACE_PERIOD_MINUTES):
 • `!unshark <id>` - Re-enable a suspended streamer by their numeric Azuracast ID
   Example: `!unshark 42`
   Recommended workflow: `!streamers` → find ID → `!unshark <id>`
+
+• `!retrack <id>` - Mark an already-suspended streamer as tracked by the Shark
+  Use when someone was suspended outside the bot and is missing from `!sharked`
+  Example: `!retrack 42`
 
 • `!shark-status` (or `!status`) - Show current Shark monitoring status
 
@@ -199,9 +204,44 @@ async def handle_shark(streamer_id, send_fn, client,
             return
         if client.suspend_streamer(sid):
             track_fn(sid, name, reason="staff action via !shark")
-            await send_fn(f"🦈 **{name}** (ID: `{sid}`) has been suspended by {author_name}.")
+            is_live, _, live_sid = client.check_streamer_connected()
+            if is_live and live_sid == sid:
+                if client.disconnect_streamer(sid):
+                    await send_fn(f"🦈 **{name}** (ID: `{sid}`) has been suspended and disconnected by {author_name}.")
+                else:
+                    await send_fn(f"🦈 **{name}** (ID: `{sid}`) has been suspended by {author_name} (disconnect failed — they may drop on their own).")
+            else:
+                await send_fn(f"🦈 **{name}** (ID: `{sid}`) has been suspended by {author_name}.")
         else:
             await send_fn(f"❌ Failed to suspend **{name}** (ID: `{sid}`) via Azuracast API. Check logs.")
+    except Exception as e:
+        await send_fn(f"❌ Error: {str(e)}")
+
+
+async def handle_retrack(streamer_id, send_fn, client,
+                         track_fn=add_auto_suspended_streamer, author_name="staff"):
+    if streamer_id is None:
+        await send_fn("❌ You must provide a streamer ID. Use `!streamers` to see IDs, then `!retrack <id>`.")
+        return
+    if not streamer_id.isdigit():
+        await send_fn(f"❌ '{streamer_id}' is not a valid ID. IDs are numeric. Use `!streamers` to see them.")
+        return
+    sid = int(streamer_id)
+    try:
+        all_streamers = client.get_all_streamers()
+        if all_streamers is None:
+            await send_fn("❌ Failed to fetch streamers from Azuracast. Cannot verify ID. Check logs.")
+            return
+        target = next((s for s in all_streamers if s.get('id') == sid), None)
+        if target is None:
+            await send_fn(f"❌ No streamer found with ID `{sid}`. Use `!streamers` to see valid IDs.")
+            return
+        name = target.get('display_name', f'ID {sid}')
+        if target.get('is_active', True):
+            await send_fn(f"❌ **{name}** (ID: `{sid}`) is not suspended — use `!shark {sid}` to suspend them first.")
+            return
+        track_fn(sid, name, reason="manual retrack via !retrack")
+        await send_fn(f"✅ **{name}** (ID: `{sid}`) is now tracked as suspended by {author_name}.")
     except Exception as e:
         await send_fn(f"❌ Error: {str(e)}")
 
@@ -397,6 +437,13 @@ async def shark(ctx, streamer_id: str = None):
     await handle_shark(streamer_id, ctx.send, real_client,
                        author_name=ctx.author.display_name)
 
+@bot.command(name='retrack')
+async def retrack(ctx, streamer_id: str = None):
+    if ctx.channel.id != DISCORD_CHANNEL_ID:
+        return
+    await handle_retrack(streamer_id, ctx.send, real_client,
+                         author_name=ctx.author.display_name)
+
 if __name__ == "__main__":
     if not DISCORD_BOT_TOKEN or DISCORD_BOT_TOKEN == "your_bot_token_here":
         print("ERROR: DISCORD_BOT_TOKEN not configured in .env file")
@@ -406,5 +453,6 @@ if __name__ == "__main__":
         print("ERROR: DISCORD_CHANNEL_ID not configured in .env file")
         exit(1)
 
+    check_and_fix_suspended_file_path()
     print("Starting Grace Period Bot...")
     bot.run(DISCORD_BOT_TOKEN)

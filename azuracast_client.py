@@ -50,6 +50,22 @@ class AzuracastClient:
             logging.error("Error suspending streamer: %s", e)
             return False
 
+    def disconnect_streamer(self, streamer_id: int) -> bool:
+        if not self._configured():
+            logging.error("Azuracast API not configured. Cannot disconnect streamer.")
+            return False
+        try:
+            url = f"{self.base_url}/api/station/{self.station_id}/streamer/{streamer_id}/broadcast"
+            resp = requests.delete(url, headers=self._headers, timeout=10)
+            if resp.status_code in [200, 204]:
+                logging.info("Disconnected streamer ID %s", streamer_id)
+                return True
+            logging.error("Failed to disconnect: %s - %s", resp.status_code, resp.text)
+            return False
+        except Exception as e:
+            logging.error("Error disconnecting streamer: %s", e)
+            return False
+
     def reactivate_streamer(self, streamer_id: int) -> bool:
         if not self._configured():
             logging.error("Azuracast API not configured. Cannot reactivate streamer.")

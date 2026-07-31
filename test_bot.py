@@ -8,6 +8,7 @@ from grace_period_bot import (
     handle_unshark,
     handle_sharked,
     handle_streamers,
+    handle_retrack,
     handle_shark_status,
     handle_shark_help,
     handle_working_on_it,
@@ -33,11 +34,14 @@ def streamer(id=42, name="TestDJ", active=True):
     return {"id": id, "display_name": name, "is_active": active}
 
 
-def mock_client(streamers=None, suspend_ok=True, reactivate_ok=True):
+def mock_client(streamers=None, suspend_ok=True, reactivate_ok=True,
+                is_live=False, live_sid=None, disconnect_ok=True):
     c = Mock()
     c.get_all_streamers.return_value = streamers if streamers is not None else [streamer()]
     c.suspend_streamer.return_value = suspend_ok
     c.reactivate_streamer.return_value = reactivate_ok
+    c.check_streamer_connected.return_value = (is_live, "TestDJ" if is_live else None, live_sid)
+    c.disconnect_streamer.return_value = disconnect_ok
     return c
 
 
@@ -111,6 +115,32 @@ class TestHandleShark:
         await handle_shark("42", send_fn, client)
         assert "Failed to suspend" in msgs[0]
 
+    async def test_disconnects_live_streamer_after_suspend(self):
+        send_fn, msgs = await capture()
+        client = mock_client(is_live=True, live_sid=42)
+        await handle_shark("42", send_fn, client, track_fn=Mock())
+        client.disconnect_streamer.assert_called_once_with(42)
+        assert "disconnected" in msgs[0]
+
+    async def test_no_disconnect_when_streamer_not_live(self):
+        send_fn, msgs = await capture()
+        client = mock_client(is_live=False)
+        await handle_shark("42", send_fn, client, track_fn=Mock())
+        client.disconnect_streamer.assert_not_called()
+
+    async def test_no_disconnect_when_different_streamer_is_live(self):
+        send_fn, msgs = await capture()
+        client = mock_client(is_live=True, live_sid=99)
+        await handle_shark("42", send_fn, client, track_fn=Mock())
+        client.disconnect_streamer.assert_not_called()
+
+    async def test_disconnect_failure_notes_in_message(self):
+        send_fn, msgs = await capture()
+        client = mock_client(is_live=True, live_sid=42, disconnect_ok=False)
+        await handle_shark("42", send_fn, client, track_fn=Mock())
+        assert "suspended" in msgs[0]
+        assert "disconnect" in msgs[0].lower()
+
 
 # ---------------------------------------------------------------------------
 # handle_unshark
@@ -161,6 +191,59 @@ class TestHandleUnshark:
         client = mock_client(streamers=[streamer(active=False)], reactivate_ok=False)
         await handle_unshark("42", send_fn, client)
         assert "Failed to re-enable" in msgs[0]
+
+
+# ---------------------------------------------------------------------------
+# handle_retrack
+# ---------------------------------------------------------------------------
+
+class TestHandleRetrack:
+    async def test_missing_id_sends_error(self):
+        send_fn, msgs = await capture()
+        await handle_retrack(None, send_fn, mock_client())
+        assert "provide a streamer ID" in msgs[0]
+
+    async def test_non_numeric_id_sends_error(self):
+        send_fn, msgs = await capture()
+        await handle_retrack("abc", send_fn, mock_client())
+        assert "not a valid ID" in msgs[0]
+
+    async def test_api_failure_sends_error(self):
+        send_fn, msgs = await capture()
+        client = mock_client()
+        client.get_all_streamers.return_value = None
+        await handle_retrack("42", send_fn, client)
+        assert "Failed to fetch" in msgs[0]
+
+    async def test_unknown_id_sends_error(self):
+        send_fn, msgs = await capture()
+        client = mock_client(streamers=[streamer(id=99)])
+        await handle_retrack("42", send_fn, client)
+        assert "No streamer found" in msgs[0]
+
+    async def test_active_streamer_sends_error(self):
+        send_fn, msgs = await capture()
+        client = mock_client(streamers=[streamer(active=True)])
+        await handle_retrack("42", send_fn, client)
+        assert "not suspended" in msgs[0]
+        assert "!shark" in msgs[0]
+
+    async def test_happy_path_tracks_suspended_streamer(self):
+        send_fn, msgs = await capture()
+        track_fn = Mock()
+        client = mock_client(streamers=[streamer(active=False)])
+        await handle_retrack("42", send_fn, client, track_fn=track_fn, author_name="Admin")
+        track_fn.assert_called_once_with(42, "TestDJ", reason="manual retrack via !retrack")
+        assert "TestDJ" in msgs[0]
+        assert "tracked" in msgs[0].lower()
+        assert "Admin" in msgs[0]
+
+    async def test_exception_sends_error(self):
+        send_fn, msgs = await capture()
+        client = mock_client()
+        client.get_all_streamers.side_effect = RuntimeError("boom")
+        await handle_retrack("42", send_fn, client)
+        assert "Error" in msgs[0]
 
 
 # ---------------------------------------------------------------------------

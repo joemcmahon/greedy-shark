@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import tempfile
 import time
@@ -90,11 +91,25 @@ def check_grace_period_active():
         return False
 
 
+def check_and_fix_suspended_file_path():
+    if os.path.exists(AUTO_SUSPENDED_FILE) and not os.path.isfile(AUTO_SUSPENDED_FILE):
+        logging.warning(
+            "'%s' is a directory, not a file — removing it so the bot can start cleanly",
+            AUTO_SUSPENDED_FILE,
+        )
+        shutil.rmtree(AUTO_SUSPENDED_FILE)
+
+
 def load_auto_suspended_streamers():
     """
     Load the list of auto-suspended streamers from file.
     Returns dict: {streamer_id: {name, suspended_at, reason}}
     """
+    if os.path.exists(AUTO_SUSPENDED_FILE) and not os.path.isfile(AUTO_SUSPENDED_FILE):
+        raise RuntimeError(
+            f"'{AUTO_SUSPENDED_FILE}' exists but is a directory, not a file — "
+            "remove it and restart the bot"
+        )
     try:
         if not os.path.exists(AUTO_SUSPENDED_FILE):
             return {}
@@ -111,6 +126,11 @@ def save_auto_suspended_streamers(suspended_dict):
     """
     Save the list of auto-suspended streamers to file.
     """
+    if os.path.exists(AUTO_SUSPENDED_FILE) and not os.path.isfile(AUTO_SUSPENDED_FILE):
+        raise RuntimeError(
+            f"'{AUTO_SUSPENDED_FILE}' exists but is a directory, not a file — "
+            "remove it and restart the bot"
+        )
     try:
         with open(AUTO_SUSPENDED_FILE, 'w') as f:
             json.dump(suspended_dict, f, indent=2)
