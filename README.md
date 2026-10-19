@@ -25,7 +25,6 @@ If you want to use the Greedy Shark, you'll need to set up a `.env` file for it.
     CHECK_INTERVAL=60
     SAMPLE_DURATION=10
     FFMPEG_TIMEOUT=15
-    ALERT_COOLDOWN=600
 
     MIN_RMS_THRESHOLD=500
     MIN_VARIANCE_THRESHOLD=1000
@@ -48,7 +47,6 @@ If you want to use the Greedy Shark, you'll need to set up a `.env` file for it.
 `CHECK_INTERVAL` - How often the Shark will wake up and listen.
 `SAMPLE_DURATION` - The number of seconds it will "listen".
 `FFMPEG_TIMEOUT` - A safety valve; if `ffmpeg` gets locked up, this interrupts it
-`ALERT_COOLDOWN` - How long the Shark waits before posting another alert
 
 `MIN_RMS_THRESHOLD` and `MIN_VARIANCE_THRESHOLD` can be used to detect streams that are active but not changing. We're an ambient station, and don't use this.
 
@@ -67,15 +65,16 @@ If you want to use the Greedy Shark, you'll need to set up a `.env` file for it.
 Greedy Shark uses a state machine to monitor your stream with two different rulesets:
 
 ### 2-minute rule
-When no live streamer/DJ is connected to Azuracast, the Shark applies the standard broadcast rule: **2 consecutive minutes of silence triggers an alert**. This catches situations where your AutoDJ has failed or the stream has gone down, the streamer has fallen asleep or walked away, forgetting they're still connected (it happens!).
+When no live streamer/DJ is connected to Azuracast, the Shark applies the standard broadcast rule: **2 consecutive minutes of silence triggers an alert**, and it **repeats every 2 minutes** until audio comes back — with no streamer on, dead air means something is actually broken. This catches situations where your AutoDJ has failed or the stream has gone down, the streamer has fallen asleep or walked away, forgetting they're still connected (it happens!).
 
 In these cases, a Discord `@Staff` member can knock the streamer offline with a `!shark` command. This tells Azuracast to suspend the streamer until they're reinstated via a `!unshark` command.
 
-### Streamer Connected (10-minute rule)
-When a live streamer is connected, the Shark switches to a more lenient rule:
+### Streamer Connected (escalating alerts)
+When a live streamer is connected, the Shark escalates instead of alerting once:
 
+- **2 minutes of silence**: Sends a "Silence detected" heads-up naming the streamer
 - **4 minutes of silence**: Sends a warning "Action may be needed soon" with a reminder to use `!shark <id>` if needed
-- **10 minutes of silence**: Sends a staff alert that action is required, pointing to `!streamers` then `!shark <id>`
+- **6 minutes of silence**: Sends a staff alert that action is required, pointing to `!streamers` then `!shark <id>`, and repeats it every 2 minutes until audio returns or the streamer disconnects
 
 The Shark does not auto-suspend when a streamer is connected — staff use `!shark` to manually suspend when they judge it necessary.
 

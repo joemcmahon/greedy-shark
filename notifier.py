@@ -1,8 +1,6 @@
 from __future__ import annotations
 import json
 import logging
-import os
-import time
 from typing import Protocol
 
 import requests
@@ -18,8 +16,6 @@ class DiscordNotifier:
     def __init__(self, webhook_url: str, staff_role_id: str):
         self.webhook_url = webhook_url
         self.staff_role_id = staff_role_id
-        self._last_alert_time: float = 0
-        self._alert_cooldown: float = float(os.getenv("ALERT_COOLDOWN", 600))
 
     def send_message(self, message: str) -> None:
         payload = {"content": f"\U0001F988 **{message}**"}
@@ -32,12 +28,6 @@ class DiscordNotifier:
 
     def send_alert(self, reason: str, rms: float | None = None,
                    variance: float | None = None, stderr: str = "") -> None:
-        now = time.time()
-        if now - self._last_alert_time < self._alert_cooldown:
-            logging.info("Skipping Discord alert due to cooldown.")
-            return
-        self._last_alert_time = now
-
         content = (f"<@&{self.staff_role_id}> \U0001F988 \U0001F6A8 "
                    f"**Stream issue detected**\n**Reason**: {reason}")
         if rms is not None:

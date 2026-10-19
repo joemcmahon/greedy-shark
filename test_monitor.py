@@ -16,9 +16,13 @@ from monitor_stream import (
     load_auto_suspended_streamers,
     save_auto_suspended_streamers,
     check_and_fix_suspended_file_path,
+    run_check,
     SILENCE_ALERT_LEVEL,
+    NO_STREAMER_REPEAT_INTERVAL,
+    STREAMER_DETECT_THRESHOLD,
     STREAMER_WARNING_THRESHOLD,
-    STREAMER_SUSPEND_THRESHOLD
+    STREAMER_SUSPEND_THRESHOLD,
+    STREAMER_REPEAT_INTERVAL,
 )
 
 
@@ -46,7 +50,7 @@ class TestMonitorContext:
     def test_reset_counters(self):
         """Test that reset_counters clears counters and warning flag."""
         ctx = make_ctx()
-        ctx.consecutive_silent_checks = 5
+        ctx.consecutive_silent_checks = 6
         ctx.warning_sent = True
 
         ctx.reset_counters()
@@ -199,7 +203,35 @@ class TestSilenceHandlers:
         assert len(records) == 1
         assert records[0]["type"] == "alert"
         assert "2 minutes" in records[0]["reason"]
-        assert ctx.consecutive_silent_checks == 0
+        assert ctx.consecutive_silent_checks == SILENCE_ALERT_LEVEL
+
+    def test_no_streamer_silence_repeats_every_check(self, tmp_path):
+        """Test that dead air with no streamer keeps alerting every 2 checks after 2 minutes."""
+        notifier = FileNotifier(tmp_path / "out.jsonl")
+        ctx = make_ctx(notifier=notifier)
+        ctx.state = MonitorState.NO_STREAMER
+        alerted_at = []
+
+        for check in range(1, 8):
+            before = len(notifier.get_records())
+            ctx.consecutive_silent_checks = check
+            handle_no_streamer_silence(ctx)
+            if len(notifier.get_records()) > before:
+                alerted_at.append(check)
+
+        assert NO_STREAMER_REPEAT_INTERVAL == 2
+        assert alerted_at == [2, 4, 6]
+
+    def test_no_streamer_repeat_reports_duration(self, tmp_path):
+        """Test that repeat alerts say how long the dead air has lasted."""
+        notifier = FileNotifier(tmp_path / "out.jsonl")
+        ctx = make_ctx(notifier=notifier)
+        ctx.state = MonitorState.NO_STREAMER
+        ctx.consecutive_silent_checks = 6
+
+        handle_no_streamer_silence(ctx)
+
+        assert "6 minutes" in notifier.get_records()[0]["reason"]
 
     def test_no_streamer_silence_below_threshold(self):
         """Test that no alert is sent below threshold."""
@@ -242,8 +274,8 @@ class TestSilenceHandlers:
 
         mock_notifier.send_alert.assert_not_called()
 
-    def test_no_auto_suspend_at_10_minutes(self, tmp_path):
-        """Test that streamer is NOT auto-suspended at 10-minute threshold."""
+    def test_no_auto_suspend_at_suspend_threshold(self, tmp_path):
+        """Test that streamer is NOT auto-suspended at the staff-action threshold."""
         notifier = FileNotifier(tmp_path / "out.jsonl")
         ctx = make_ctx(notifier=notifier)
         ctx.state = MonitorState.STREAMER_ACTIVE
@@ -257,8 +289,8 @@ class TestSilenceHandlers:
         assert ctx.state == MonitorState.STREAMER_ACTIVE
         assert ctx.streamer_id == 123
 
-    def test_urgent_alert_sent_at_10_minutes(self, tmp_path):
-        """Test that an urgent alert is sent at 10-minute threshold."""
+    def test_urgent_alert_sent_at_suspend_threshold(self, tmp_path):
+        """Test that an urgent alert is sent at the staff-action threshold."""
         notifier = FileNotifier(tmp_path / "out.jsonl")
         ctx = make_ctx(notifier=notifier)
         ctx.state = MonitorState.STREAMER_ACTIVE
@@ -273,21 +305,111 @@ class TestSilenceHandlers:
         assert records[0]["type"] == "alert"
         assert "TestDJ" in records[0]["reason"]
 
-    def test_urgent_alert_repeats_after_10_minutes(self, tmp_path):
-        """Test that urgent alert repeats on every check after 10 minutes."""
+    def test_urgent_alert_repeats_every_interval(self, tmp_path):
+        """Test that urgent alert repeats every STREAMER_REPEAT_INTERVAL checks."""
         notifier = FileNotifier(tmp_path / "out.jsonl")
         ctx = make_ctx(notifier=notifier)
         ctx.state = MonitorState.STREAMER_ACTIVE
         ctx.streamer_name = "TestDJ"
         ctx.streamer_id = 123
-        ctx.consecutive_silent_checks = STREAMER_SUSPEND_THRESHOLD + 3
+        ctx.consecutive_silent_checks = STREAMER_SUSPEND_THRESHOLD + STREAMER_REPEAT_INTERVAL
 
         handle_streamer_active_silence(ctx)
 
         records = notifier.get_records()
         assert len(records) == 1
         assert records[0]["type"] == "alert"
+        assert "Staff action required" in records[0]["reason"]
+
+    def test_urgent_alert_not_sent_between_intervals(self):
+        """Test that urgent alert is quiet on checks between repeat intervals."""
+        mock_notifier = Mock()
+        ctx = make_ctx(notifier=mock_notifier)
+        ctx.state = MonitorState.STREAMER_ACTIVE
+        ctx.streamer_name = "TestDJ"
+        ctx.consecutive_silent_checks = STREAMER_SUSPEND_THRESHOLD + 1
+
+        handle_streamer_active_silence(ctx)
+
+        mock_notifier.send_alert.assert_not_called()
+
+    def test_streamer_active_detect_at_2_minutes(self, tmp_path):
+        """Test that the first silence alert goes out at the detect threshold."""
+        notifier = FileNotifier(tmp_path / "out.jsonl")
+        ctx = make_ctx(notifier=notifier)
+        ctx.state = MonitorState.STREAMER_ACTIVE
+        ctx.streamer_name = "TestDJ"
+        ctx.consecutive_silent_checks = STREAMER_DETECT_THRESHOLD
+
+        handle_streamer_active_silence(ctx)
+
+        records = notifier.get_records()
+        assert len(records) == 1
         assert "TestDJ" in records[0]["reason"]
+        assert "2 minutes" in records[0]["reason"]
+
+    def test_streamer_active_escalation_schedule(self, tmp_path):
+        """Test the full detect/warn/imperative cadence across consecutive checks."""
+        notifier = FileNotifier(tmp_path / "out.jsonl")
+        ctx = make_ctx(notifier=notifier)
+        ctx.state = MonitorState.STREAMER_ACTIVE
+        ctx.streamer_name = "TestDJ"
+        alerted_at = []
+
+        for check in range(1, 11):
+            before = len(notifier.get_records())
+            ctx.consecutive_silent_checks = check
+            handle_streamer_active_silence(ctx)
+            if len(notifier.get_records()) > before:
+                alerted_at.append(check)
+
+        assert alerted_at == [2, 4, 6, 8, 10]
+
+
+
+class TestRunCheck:
+    """Test a single pass of the monitor loop."""
+
+    def make_silent_ctx(self, notifier, wav_bytes):
+        azuracast = Mock()
+        azuracast.check_streamer_connected.return_value = (True, "TestDJ", 123)
+        ctx = make_ctx(notifier=notifier, azuracast=azuracast,
+                       sample_fn=Mock(return_value=wav_bytes))
+        ctx.state = MonitorState.STREAMER_ACTIVE
+        ctx.streamer_name = "TestDJ"
+        ctx.streamer_id = 123
+        return ctx
+
+    @patch('monitor_stream.save_monitor_state')
+    @patch('monitor_stream.check_grace_period_active', return_value=False)
+    @patch('monitor_stream.analyze_audio')
+    def test_silent_checks_only_alert_on_schedule(self, mock_analyze, _grace, _save, tmp_path):
+        """Test that per-check silence does not emit its own alert ahead of the schedule."""
+        mock_analyze.return_value = (False, {"reason": "Stream is completely silent (zero amplitude)",
+                                             "rms": 0.0, "variance": 0.0})
+        notifier = FileNotifier(tmp_path / "out.jsonl")
+        ctx = self.make_silent_ctx(notifier, b"wav")
+
+        run_check(ctx)
+        assert notifier.get_records() == []
+
+        run_check(ctx)
+        records = notifier.get_records()
+        assert len(records) == 1
+        assert "TestDJ" in records[0]["reason"]
+
+    @patch('monitor_stream.save_monitor_state')
+    @patch('monitor_stream.check_grace_period_active', return_value=False)
+    def test_failed_samples_count_as_silence(self, _grace, _save, tmp_path):
+        """Test that failed audio fetches advance the silence counter."""
+        notifier = FileNotifier(tmp_path / "out.jsonl")
+        ctx = self.make_silent_ctx(notifier, None)
+
+        run_check(ctx)
+        run_check(ctx)
+
+        assert ctx.consecutive_silent_checks == 2
+        assert len(notifier.get_records()) == 1
 
 
 class TestHandleSilenceByState:

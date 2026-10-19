@@ -24,7 +24,6 @@ DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 CHECK_INTERVAL_SECONDS = int(os.getenv("CHECK_INTERVAL", 300))
 SAMPLE_DURATION = int(os.getenv("SAMPLE_DURATION", 10))
 FFMPEG_TIMEOUT = int(os.getenv("FFMPEG_TIMEOUT", 15))
-ALERT_COOLDOWN_SECONDS = int(os.getenv("ALERT_COOLDOWN", 600))
 STAFF_ROLE_ID = os.getenv("STAFF_ROLE_ID")
 
 MIN_RMS_THRESHOLD = float(os.getenv("MIN_RMS_THRESHOLD", 500))
@@ -233,8 +232,11 @@ def analyze_audio(wav_bytes: bytes) -> tuple[bool, dict | None]:
 
 
 SILENCE_ALERT_LEVEL = 2 # 2 x 60s = 2 minutes (no streamer threshold)
+NO_STREAMER_REPEAT_INTERVAL = 2  # dead air with no streamer: re-alert every 2 checks
+STREAMER_DETECT_THRESHOLD = 2  # 2 x 60s = 2 minutes
 STREAMER_WARNING_THRESHOLD = 4  # 4 x 60s = 4 minutes
-STREAMER_SUSPEND_THRESHOLD = 10  # 10 x 60s = 10 minutes
+STREAMER_SUSPEND_THRESHOLD = 6  # 6 x 60s = 6 minutes
+STREAMER_REPEAT_INTERVAL = 2  # repeat staff alert every 2 checks after suspend threshold
 
 
 class MonitorContext:
@@ -315,22 +317,29 @@ def handle_state_transition(ctx, new_state, streamer_name=None, streamer_id=None
 
 def handle_no_streamer_silence(ctx):
     """Handle silence detection when no streamer is connected."""
-    if ctx.consecutive_silent_checks == SILENCE_ALERT_LEVEL:
-        ctx.notifier.send_alert("🚨 **Stream silent for 2 minutes!** (No streamer connected)")
-        ctx.consecutive_silent_checks = 0
+    checks = ctx.consecutive_silent_checks
+    if (checks >= SILENCE_ALERT_LEVEL
+            and (checks - SILENCE_ALERT_LEVEL) % NO_STREAMER_REPEAT_INTERVAL == 0):
+        ctx.notifier.send_alert(f"🚨 **Stream silent for {checks} minutes!** (No streamer connected)")
 
 
 def handle_streamer_active_silence(ctx):
     """Handle silence detection when a streamer is actively connected."""
-    if ctx.consecutive_silent_checks == STREAMER_WARNING_THRESHOLD and not ctx.warning_sent:
+    checks = ctx.consecutive_silent_checks
+    if checks == STREAMER_DETECT_THRESHOLD:
+        ctx.notifier.send_alert(
+            f"🔇 **Silence detected** - Streamer '{ctx.streamer_name}' has been silent "
+            f"for {STREAMER_DETECT_THRESHOLD} minutes.")
+    elif checks == STREAMER_WARNING_THRESHOLD and not ctx.warning_sent:
         ctx.notifier.send_alert(
             f"⚠️ **Action may be needed soon** - Streamer '{ctx.streamer_name}' has been silent "
             f"for {STREAMER_WARNING_THRESHOLD} minutes. Use `!shark <id>` to suspend if needed.")
         ctx.warning_sent = True
-    elif ctx.consecutive_silent_checks >= STREAMER_SUSPEND_THRESHOLD:
+    elif (checks >= STREAMER_SUSPEND_THRESHOLD
+          and (checks - STREAMER_SUSPEND_THRESHOLD) % STREAMER_REPEAT_INTERVAL == 0):
         ctx.notifier.send_alert(
             f"🚨 **Staff action required** - Streamer '{ctx.streamer_name}' has been silent "
-            f"for {ctx.consecutive_silent_checks} minutes. Use `!streamers` then `!shark <id>` to suspend.")
+            f"for {checks} minutes. Use `!streamers` then `!shark <id>` to suspend.")
 
 
 def handle_grace_period_silence(ctx):
@@ -364,6 +373,38 @@ def save_monitor_state(ctx):
         logging.error(f"Error saving monitor state: {e}")
 
 
+def run_check(ctx):
+    """Run one monitoring pass: update state, sample audio, and alert on schedule."""
+    logging.info(f"🔁 Checking stream... [State: {ctx.state.value}]")
+
+    is_streamer_connected, streamer_name, streamer_id = ctx.azuracast.check_streamer_connected()
+    grace_period_active = check_grace_period_active()
+
+    new_state = determine_next_state(ctx, is_streamer_connected, grace_period_active)
+    if new_state:
+        handle_state_transition(ctx, new_state, streamer_name, streamer_id)
+
+    wav_bytes = ctx.sample_fn(STREAM_URL, SAMPLE_DURATION)
+
+    if wav_bytes:
+        is_active, alert_info = analyze_audio(wav_bytes)
+        if is_active:
+            logging.info("✅ Stream is active and broadcasting.")
+            ctx.reset_counters()
+        else:
+            ctx.consecutive_silent_checks += 1
+            # Alerts come only from the state handlers' schedule.
+            reason = alert_info["reason"] if alert_info else "unknown"
+            logging.warning(f"⚠️ Stream appears silent or inactive: {reason} "
+                            f"({ctx.consecutive_silent_checks} checks)")
+    else:
+        ctx.consecutive_silent_checks += 1
+        logging.error(f"❌ Failed to retrieve audio sample. ({ctx.consecutive_silent_checks} checks)")
+
+    handle_silence_by_state(ctx)
+    save_monitor_state(ctx)
+
+
 def monitor_loop():
     notifier = DiscordNotifier(DISCORD_WEBHOOK_URL, STAFF_ROLE_ID)
     client = AzuracastClient(AZURACAST_BASE_URL, AZURACAST_API_KEY, AZURACAST_STATION_ID)
@@ -376,33 +417,7 @@ def monitor_loop():
     notifier.send_message("Greedy Shark is active")
 
     while True:
-        logging.info(f"🔁 Checking stream... [State: {ctx.state.value}]")
-
-        is_streamer_connected, streamer_name, streamer_id = ctx.azuracast.check_streamer_connected()
-        grace_period_active = check_grace_period_active()
-
-        new_state = determine_next_state(ctx, is_streamer_connected, grace_period_active)
-        if new_state:
-            handle_state_transition(ctx, new_state, streamer_name, streamer_id)
-
-        wav_bytes = ctx.sample_fn(STREAM_URL, SAMPLE_DURATION)
-
-        if wav_bytes:
-            is_active, alert_info = analyze_audio(wav_bytes)
-            if is_active:
-                logging.info("✅ Stream is active and broadcasting.")
-                ctx.reset_counters()
-            else:
-                ctx.consecutive_silent_checks += 1
-                if alert_info:
-                    ctx.notifier.send_alert(**alert_info)
-                logging.warning(f"⚠️ Stream appears silent or inactive. ({ctx.consecutive_silent_checks} checks)")
-        else:
-            ctx.consecutive_silent_checks += 1
-            logging.error(f"❌ Failed to retrieve audio sample. ({ctx.consecutive_silent_checks} checks)")
-
-        handle_silence_by_state(ctx)
-        save_monitor_state(ctx)
+        run_check(ctx)
         time.sleep(CHECK_INTERVAL_SECONDS)
 
 if __name__ == "__main__":

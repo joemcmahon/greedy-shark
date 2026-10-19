@@ -1,5 +1,6 @@
 import pytest
-from notifier import FileNotifier
+from unittest.mock import patch, Mock
+from notifier import FileNotifier, DiscordNotifier
 
 
 def test_file_notifier_send_message(tmp_path):
@@ -49,3 +50,15 @@ def test_file_notifier_multiple_types(tmp_path):
 def test_file_notifier_empty_returns_empty_list(tmp_path):
     n = FileNotifier(tmp_path / "out.jsonl")
     assert n.get_records() == []
+
+
+
+@patch("notifier.requests.post")
+def test_discord_notifier_sends_every_alert(mock_post):
+    """Alert pacing is the monitor's job; the notifier must never drop an alert."""
+    mock_post.return_value = Mock(status_code=204)
+    n = DiscordNotifier("http://hook", "42")
+    n.send_alert("first")
+    n.send_alert("second")
+    n.send_alert("third")
+    assert mock_post.call_count == 3
