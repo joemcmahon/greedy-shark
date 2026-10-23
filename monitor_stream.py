@@ -21,7 +21,7 @@ from notifier import DiscordNotifier, Notifier
 load_dotenv()
 STREAM_URL = os.getenv("STREAM_URL")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
-CHECK_INTERVAL_SECONDS = int(os.getenv("CHECK_INTERVAL", 300))
+CHECK_INTERVAL_SECONDS = int(os.getenv("CHECK_INTERVAL", 60))  # alert thresholds below assume 60s
 SAMPLE_DURATION = int(os.getenv("SAMPLE_DURATION", 10))
 STAFF_ROLE_ID = os.getenv("STAFF_ROLE_ID")
 

@@ -99,7 +99,7 @@ GRACE_PERIOD_MINUTES=15
 | `STREAM_URL` | yes | — | monitor | The public audio stream to sample (anything ffmpeg can open, usually an Icecast/Shoutcast `.mp3` or `.aac` URL). |
 | `DISCORD_WEBHOOK_URL` | yes | — | monitor | Webhook that alerts and status messages are posted to. |
 | `STAFF_ROLE_ID` | yes | — | monitor | Numeric ID of the role to `@`-mention on alerts. |
-| `CHECK_INTERVAL` | **set it to `60`** | `300` | monitor | Seconds to sleep between checks. The alert thresholds are counted in checks and assume a 60-second interval (2 checks = 2 minutes, and so on). If you leave this at the default, every threshold is 5× longer. |
+| `CHECK_INTERVAL` | no | `60` | monitor | Seconds to sleep between checks. The alert thresholds are counted in checks and assume a 60-second interval (2 checks = 2 minutes, and so on), so changing this stretches or shrinks every threshold proportionally. Leave it at 60 unless you mean that. |
 | `SAMPLE_DURATION` | no | `10` | monitor | Seconds of audio to capture on each check. |
 | `AZURACAST_BASE_URL` | yes* | — | both | Base URL of Azuracast, no trailing slash. |
 | `AZURACAST_API_KEY` | yes* | — | both | API key from step 3. |
