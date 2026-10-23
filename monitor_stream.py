@@ -23,11 +23,7 @@ STREAM_URL = os.getenv("STREAM_URL")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 CHECK_INTERVAL_SECONDS = int(os.getenv("CHECK_INTERVAL", 300))
 SAMPLE_DURATION = int(os.getenv("SAMPLE_DURATION", 10))
-FFMPEG_TIMEOUT = int(os.getenv("FFMPEG_TIMEOUT", 15))
 STAFF_ROLE_ID = os.getenv("STAFF_ROLE_ID")
-
-MIN_RMS_THRESHOLD = float(os.getenv("MIN_RMS_THRESHOLD", 500))
-MIN_VARIANCE_THRESHOLD = float(os.getenv("MIN_VARIANCE_THRESHOLD", 1000))
 
 # Azuracast API Configuration
 AZURACAST_BASE_URL = os.getenv("AZURACAST_BASE_URL")
@@ -49,7 +45,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(me
 # State machine for monitoring modes
 class MonitorState(Enum):
     NO_STREAMER = "no_streamer"           # No streamer connected, 2-minute rule
-    STREAMER_ACTIVE = "streamer_active"   # Streamer connected, 10-minute rule
+    STREAMER_ACTIVE = "streamer_active"   # Streamer connected, escalating 2/4/6-minute alerts
     GRACE_PERIOD = "grace_period"         # Future: streamer acknowledged issues
 
 import atexit

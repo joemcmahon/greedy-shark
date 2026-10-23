@@ -12,8 +12,10 @@ COPY requirements.txt requirements.txt
 # Install dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of your application code into the container
-COPY *.py .env .
+# Copy the application code into the container. .env is deliberately not
+# copied: docker-compose supplies it at runtime via env_file, keeping
+# secrets out of the image.
+COPY *.py .
 
 # Specify the command to run when the container starts
 CMD ["python", "monitor_stream.py"]

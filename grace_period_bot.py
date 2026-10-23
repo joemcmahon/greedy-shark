@@ -76,9 +76,9 @@ async def handle_shark_help(send_fn, grace_minutes=GRACE_PERIOD_MINUTES):
 • `!shark-help` (or `!sharkhelp`) - Show this help message
 
 **How the Shark Works:**
-• No streamer connected: 2-minute silence → staff alert
-• Streamer connected: 4-minute silence → warning alert to staff
-• 10+ minutes silence: escalating urgent alerts every check interval
+• No streamer connected: 2-minute silence → staff alert, repeated every 2 minutes
+• Streamer connected: 2 minutes → heads-up, 4 minutes → warning,
+  6 minutes → staff action alert, repeated every 2 minutes
 • Staff uses `!streamers` then `!shark <id>` to suspend when needed
 • Audio detection resets all timers
 • Grace period pauses monitoring entirely
