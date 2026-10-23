@@ -319,6 +319,13 @@ def handle_no_streamer_silence(ctx):
         ctx.notifier.send_alert(f"🚨 **Stream silent for {checks} minutes!** (No streamer connected)")
 
 
+def shark_command_hint(ctx):
+    """The command staff should run for the live streamer, or how to find it."""
+    if ctx.streamer_id is not None:
+        return f"`!shark {ctx.streamer_id}`"
+    return "`!streamers` then `!shark <id>`"
+
+
 def handle_streamer_active_silence(ctx):
     """Handle silence detection when a streamer is actively connected."""
     checks = ctx.consecutive_silent_checks
@@ -329,13 +336,14 @@ def handle_streamer_active_silence(ctx):
     elif checks == STREAMER_WARNING_THRESHOLD and not ctx.warning_sent:
         ctx.notifier.send_alert(
             f"⚠️ **Action may be needed soon** - Streamer '{ctx.streamer_name}' has been silent "
-            f"for {STREAMER_WARNING_THRESHOLD} minutes. Use `!shark <id>` to suspend if needed.")
+            f"for {STREAMER_WARNING_THRESHOLD} minutes. Use {shark_command_hint(ctx)} "
+            f"to suspend if needed.")
         ctx.warning_sent = True
     elif (checks >= STREAMER_SUSPEND_THRESHOLD
           and (checks - STREAMER_SUSPEND_THRESHOLD) % STREAMER_REPEAT_INTERVAL == 0):
         ctx.notifier.send_alert(
             f"🚨 **Staff action required** - Streamer '{ctx.streamer_name}' has been silent "
-            f"for {checks} minutes. Use `!streamers` then `!shark <id>` to suspend.")
+            f"for {checks} minutes. Use {shark_command_hint(ctx)} to suspend.")
 
 
 def handle_grace_period_silence(ctx):

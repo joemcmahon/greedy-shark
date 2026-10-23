@@ -178,8 +178,10 @@ In these cases, a site admin will need to log in to Azuracast and try to determi
 This catches situations where the streamer has fallen asleep or walked away, forgetting they're still connected (it happens!). When a live streamer is connected, the Shark escalates instead of alerting once:
 
 - **2 minutes of silence**: Sends a "Silence detected" heads-up naming the streamer
-- **4 minutes of silence**: Sends a warning "Action may be needed soon" with a reminder to use `!shark <id>` if needed
-- **6 minutes of silence**: Sends a staff alert that action is required, pointing to `!streamers` then `!shark <id>`, and repeats it every 2 minutes until audio returns or the streamer disconnects
+- **4 minutes of silence**: Sends a warning "Action may be needed soon" with the exact command to use, e.g. `!shark 15`, if needed
+- **6 minutes of silence**: Sends a staff alert that action is required, again with the `!shark` command, and repeats it every 2 minutes until audio returns or the streamer disconnects
+
+The Shark finds the live streamer's ID by matching the name Azuracast reports against the streamer list (display name first, then username). If it can't find exactly one match, the alerts say to use `!streamers` to look the ID up instead.
 
 The Shark does not auto-suspend when a streamer is connected — staff use `!shark` to manually suspend when they judge it necessary. `!shark` both disables the streamer's account and disconnects them if they're live.
 
@@ -228,5 +230,6 @@ The test suite covers:
 - `test_monitor.py`: the monitor state machine, silence handling for each state, alert cadence, grace period and state-file handling, and full lifecycle scenarios
 - `test_bot.py`: every bot command handler
 - `test_notifier.py`: the Discord and file notifiers
+- `test_azuracast_client.py`: identifying the live streamer from Azuracast's API responses
 
 All external dependencies (Azuracast API, Discord webhooks, file I/O) are mocked, so tests run quickly and reliably without network access.

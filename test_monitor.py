@@ -305,6 +305,38 @@ class TestSilenceHandlers:
         assert records[0]["type"] == "alert"
         assert "TestDJ" in records[0]["reason"]
 
+    def test_action_alerts_name_the_shark_command_when_id_known(self, tmp_path):
+        """Warning and staff-action alerts give the exact !shark command."""
+        notifier = FileNotifier(tmp_path / "out.jsonl")
+        ctx = make_ctx(notifier=notifier)
+        ctx.state = MonitorState.STREAMER_ACTIVE
+        ctx.streamer_name = "TestDJ"
+        ctx.streamer_id = 123
+        for checks in (STREAMER_WARNING_THRESHOLD, STREAMER_SUSPEND_THRESHOLD):
+            ctx.consecutive_silent_checks = checks
+            handle_streamer_active_silence(ctx)
+
+        records = notifier.get_records()
+        assert len(records) == 2
+        for record in records:
+            assert "`!shark 123`" in record["reason"]
+
+    def test_action_alerts_point_to_streamers_when_id_unknown(self, tmp_path):
+        """Without a resolved ID, alerts fall back to the !streamers lookup."""
+        notifier = FileNotifier(tmp_path / "out.jsonl")
+        ctx = make_ctx(notifier=notifier)
+        ctx.state = MonitorState.STREAMER_ACTIVE
+        ctx.streamer_name = "TestDJ"
+        ctx.streamer_id = None
+        for checks in (STREAMER_WARNING_THRESHOLD, STREAMER_SUSPEND_THRESHOLD):
+            ctx.consecutive_silent_checks = checks
+            handle_streamer_active_silence(ctx)
+
+        records = notifier.get_records()
+        assert len(records) == 2
+        for record in records:
+            assert "`!streamers` then `!shark <id>`" in record["reason"]
+
     def test_urgent_alert_repeats_every_interval(self, tmp_path):
         """Test that urgent alert repeats every STREAMER_REPEAT_INTERVAL checks."""
         notifier = FileNotifier(tmp_path / "out.jsonl")

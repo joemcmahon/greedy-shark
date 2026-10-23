@@ -26,12 +26,33 @@ class AzuracastClient:
             live = resp.json().get("live", {})
             is_live = live.get("is_live", False)
             name = live.get("streamer_name")
-            sid = live.get("broadcaster_id")
+            sid = self._find_streamer_id(name) if is_live else None
             logging.info("Streamer check: is_live=%s, streamer=%s, id=%s", is_live, name, sid)
             return is_live, name, sid
         except Exception as e:
             logging.error("Error checking streamer status: %s", e)
             return False, None, None
+
+    def _find_streamer_id(self, name: str | None) -> int | None:
+        # Now-playing data names the live streamer but gives no ID, so look the
+        # name up in the streamer list: display name first, then username.
+        if not name:
+            return None
+        streamers = self.get_all_streamers()
+        if streamers is None:
+            return None
+        wanted = name.strip().casefold()
+        for field in ("display_name", "streamer_username"):
+            ids = [s.get("id") for s in streamers
+                   if (s.get(field) or "").strip().casefold() == wanted]
+            if len(ids) == 1:
+                return ids[0]
+            if len(ids) > 1:
+                logging.warning("Live streamer name %r matches several streamers %s; "
+                                "not guessing which one", name, ids)
+                return None
+        logging.warning("Live streamer name %r matches no registered streamer", name)
+        return None
 
     def suspend_streamer(self, streamer_id: int) -> bool:
         if not self._configured():
