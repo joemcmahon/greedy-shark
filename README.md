@@ -65,12 +65,12 @@ If you want to use the Greedy Shark, you'll need to set up a `.env` file for it.
 Greedy Shark uses a state machine to monitor your stream with two different rulesets:
 
 ### 2-minute rule
-When no live streamer/DJ is connected to Azuracast, the Shark applies the standard broadcast rule: **2 consecutive minutes of silence triggers an alert**, and it **repeats every 2 minutes** until audio comes back — with no streamer on, dead air means something is actually broken. This catches situations where your AutoDJ has failed or the stream has gone down, the streamer has fallen asleep or walked away, forgetting they're still connected (it happens!).
+When no live streamer/DJ is connected to Azuracast, the Shark applies the standard broadcast rule: **2 consecutive minutes of silence triggers an alert**, and it **repeats every 2 minutes** until audio comes back — with no streamer on, dead air means something is actually broken. 
 
-In these cases, a Discord `@Staff` member can knock the streamer offline with a `!shark` command. This tells Azuracast to suspend the streamer until they're reinstated via a `!unshark` command.
+In these cases, a site admin will need to log in to Azuracast and try to determine what the issue is (or if the server machine itself has gone down).
 
 ### Streamer Connected (escalating alerts)
-When a live streamer is connected, the Shark escalates instead of alerting once:
+This catches situations where the streamer has fallen asleep or walked away, forgetting they're still connected (it happens!). When a live streamer is connected, the Shark escalates instead of alerting once:
 
 - **2 minutes of silence**: Sends a "Silence detected" heads-up naming the streamer
 - **4 minutes of silence**: Sends a warning "Action may be needed soon" with a reminder to use `!shark <id>` if needed
@@ -88,12 +88,12 @@ When a streamer is suspended via `!shark`, the Shark tracks this. Staff can mana
 - **`!sharked`** - List all streamers currently suspended via `!shark`
 - **`!unshark <id>`** - Re-enable any suspended streamer by their Azuracast ID
 
+It's probably safest to not `!unshark` a streamer until they've actually checked in, or they have done it themselves. Most streaming software will keep trying to reconnect, so if you `!unshark` a streamer _before_ they've shut off their streaming software, you'll just end up with dead air again.
+
 ### Getting Help
-Use `!shark-help` (or `!sharkhelp`) in Discord to see all available commands with usage examples.
+Use `!shark-help` (or `!sharkhelp`, or just `!help`) in Discord to see all available commands with usage examples.
 
 ### State Transitions
-- When a streamer connects, the monitor switches from 2-minute to 10-minute mode
-- When a streamer disconnects (naturally or via suspension), it switches back to 2-minute mode
 - When `!working-on-it` is used, the monitor enters grace period mode
 - When grace period expires, normal monitoring resumes
 - All silence counters reset on state transitions
@@ -102,7 +102,7 @@ The silence detection algorithm looks for zero-amplitude signals. The signal lev
 
 ## Setting Up the Discord Bot
 
-To enable bot commands (`!shark`, `!unshark`, `!streamers`, grace period commands, etc.):
+To enable bot commands (`!shark`, `!unshark`, `!streamers`, grace period commands, etc.) on your own server:
 
 1. Go to the [Discord Developer Portal](https://discord.com/developers/applications)
 2. Create a new application or use an existing one
@@ -111,7 +111,7 @@ To enable bot commands (`!shark`, `!unshark`, `!streamers`, grace period command
 5. In the "Bot" tab, Under "Privileged Gateway Intents", enable "Message Content Intent"
 6. In the Oauth2 tab, first check "bot" in the Oauth2 URL Generator section, then in the section that appears, check "Send Messages", "View Channels", and "Read Message History"
 6. Copy the generated URL and open it in the browser to invite the bot to your server.
-7. Get your channel ID (enable Developer Mode in Discord, right-click channel, Copy ID)
+7. Get your channel ID (enable Developer Mode in Discord, right-click channel, Copy ID) and add it to `.env`.
 8. Run the bot: `python grace_period_bot.py`
 
 The bot can run alongside the monitor script or separately.
