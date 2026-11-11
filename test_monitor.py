@@ -21,7 +21,7 @@ from monitor_stream import (
     NO_STREAMER_REPEAT_INTERVAL,
     STREAMER_DETECT_THRESHOLD,
     STREAMER_WARNING_THRESHOLD,
-    STREAMER_SUSPEND_THRESHOLD,
+    STREAMER_URGENT_THRESHOLD,
     STREAMER_REPEAT_INTERVAL,
 )
 
@@ -281,7 +281,7 @@ class TestSilenceHandlers:
         ctx.state = MonitorState.STREAMER_ACTIVE
         ctx.streamer_name = "TestDJ"
         ctx.streamer_id = 123
-        ctx.consecutive_silent_checks = STREAMER_SUSPEND_THRESHOLD
+        ctx.consecutive_silent_checks = STREAMER_URGENT_THRESHOLD
 
         handle_streamer_active_silence(ctx)
 
@@ -296,7 +296,7 @@ class TestSilenceHandlers:
         ctx.state = MonitorState.STREAMER_ACTIVE
         ctx.streamer_name = "TestDJ"
         ctx.streamer_id = 123
-        ctx.consecutive_silent_checks = STREAMER_SUSPEND_THRESHOLD
+        ctx.consecutive_silent_checks = STREAMER_URGENT_THRESHOLD
 
         handle_streamer_active_silence(ctx)
 
@@ -312,7 +312,7 @@ class TestSilenceHandlers:
         ctx.state = MonitorState.STREAMER_ACTIVE
         ctx.streamer_name = "TestDJ"
         ctx.streamer_id = 123
-        for checks in (STREAMER_WARNING_THRESHOLD, STREAMER_SUSPEND_THRESHOLD):
+        for checks in (STREAMER_WARNING_THRESHOLD, STREAMER_URGENT_THRESHOLD):
             ctx.consecutive_silent_checks = checks
             handle_streamer_active_silence(ctx)
 
@@ -328,7 +328,7 @@ class TestSilenceHandlers:
         ctx.state = MonitorState.STREAMER_ACTIVE
         ctx.streamer_name = "TestDJ"
         ctx.streamer_id = None
-        for checks in (STREAMER_WARNING_THRESHOLD, STREAMER_SUSPEND_THRESHOLD):
+        for checks in (STREAMER_WARNING_THRESHOLD, STREAMER_URGENT_THRESHOLD):
             ctx.consecutive_silent_checks = checks
             handle_streamer_active_silence(ctx)
 
@@ -344,7 +344,7 @@ class TestSilenceHandlers:
         ctx.state = MonitorState.STREAMER_ACTIVE
         ctx.streamer_name = "TestDJ"
         ctx.streamer_id = 123
-        ctx.consecutive_silent_checks = STREAMER_SUSPEND_THRESHOLD + STREAMER_REPEAT_INTERVAL
+        ctx.consecutive_silent_checks = STREAMER_URGENT_THRESHOLD + STREAMER_REPEAT_INTERVAL
 
         handle_streamer_active_silence(ctx)
 
@@ -359,7 +359,7 @@ class TestSilenceHandlers:
         ctx = make_ctx(notifier=mock_notifier)
         ctx.state = MonitorState.STREAMER_ACTIVE
         ctx.streamer_name = "TestDJ"
-        ctx.consecutive_silent_checks = STREAMER_SUSPEND_THRESHOLD + 1
+        ctx.consecutive_silent_checks = STREAMER_URGENT_THRESHOLD + 1
 
         handle_streamer_active_silence(ctx)
 
