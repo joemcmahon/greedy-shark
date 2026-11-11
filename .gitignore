@@ -4,3 +4,7 @@ monitor-venv
 .auto_suspended_streamers
 .monitor_state
 __pycache__/
+
+# Local-only handoffs (public repo)
+docs/HANDOFF.md
+docs/archive/
