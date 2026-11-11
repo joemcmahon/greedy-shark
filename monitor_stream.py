@@ -134,7 +134,7 @@ def save_auto_suspended_streamers(suspended_dict):
         logging.error(f"Error saving auto-suspended streamers: {e}")
 
 
-def add_auto_suspended_streamer(streamer_id, streamer_name, reason="10 minutes of silence"):
+def add_auto_suspended_streamer(streamer_id, streamer_name, reason="staff action"):
     """
     Add a streamer to the auto-suspension tracking list.
     """
@@ -231,7 +231,7 @@ SILENCE_ALERT_LEVEL = 2 # 2 x 60s = 2 minutes (no streamer threshold)
 NO_STREAMER_REPEAT_INTERVAL = 2  # dead air with no streamer: re-alert every 2 checks
 STREAMER_DETECT_THRESHOLD = 2  # 2 x 60s = 2 minutes
 STREAMER_WARNING_THRESHOLD = 4  # 4 x 60s = 4 minutes
-STREAMER_SUSPEND_THRESHOLD = 6  # 6 x 60s = 6 minutes
+STREAMER_URGENT_THRESHOLD = 6  # 6 x 60s = 6 minutes; staff-action alerts start here
 STREAMER_REPEAT_INTERVAL = 2  # repeat staff alert every 2 checks after suspend threshold
 
 
@@ -339,8 +339,8 @@ def handle_streamer_active_silence(ctx):
             f"for {STREAMER_WARNING_THRESHOLD} minutes. Use {shark_command_hint(ctx)} "
             f"to suspend if needed.")
         ctx.warning_sent = True
-    elif (checks >= STREAMER_SUSPEND_THRESHOLD
-          and (checks - STREAMER_SUSPEND_THRESHOLD) % STREAMER_REPEAT_INTERVAL == 0):
+    elif (checks >= STREAMER_URGENT_THRESHOLD
+          and (checks - STREAMER_URGENT_THRESHOLD) % STREAMER_REPEAT_INTERVAL == 0):
         ctx.notifier.send_alert(
             f"🚨 **Staff action required** - Streamer '{ctx.streamer_name}' has been silent "
             f"for {checks} minutes. Use {shark_command_hint(ctx)} to suspend.")
