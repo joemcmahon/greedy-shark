@@ -22,6 +22,7 @@ from monitor_stream import (
     ensure_state_dir,
     run_check,
     check_required_config,
+    parse_bool_env,
     SILENCE_ALERT_LEVEL,
     NO_STREAMER_REPEAT_INTERVAL,
     STREAMER_DETECT_THRESHOLD,
@@ -670,6 +671,27 @@ def test_check_required_config_exits_without_webhook():
             check_required_config(missing)
         assert exc.value.code == 1
     assert check_required_config("https://x") is None
+
+
+def test_check_required_config_rejects_whitespace_webhook():
+    with pytest.raises(SystemExit) as exc:
+        check_required_config("   \n")
+    assert exc.value.code == 1
+
+
+@pytest.mark.parametrize("value,expected", [
+    (None, True), ("", True), ("true", True), ("1", True), ("yes", True),
+    ("false", False), ("FALSE", False), (" False ", False),
+    ("0", False), ("no", False), ("No", False),
+    ("off", True),  # only false/0/no disable, as before
+])
+def test_parse_bool_env(value, expected):
+    assert parse_bool_env(value) is expected
+
+
+def test_parse_bool_env_default_applies_to_none_only():
+    assert parse_bool_env(None, default=False) is False
+    assert parse_bool_env("true", default=False) is True
 
 # --- Per-station state paths ---
 

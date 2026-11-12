@@ -18,6 +18,16 @@ from azuracast_client import AzuracastClient
 from notifier import DiscordNotifier, Notifier
 from station import state_paths
 
+def parse_bool_env(value, default=True):
+    """Parse a boolean env value: false only for false/0/no (any case, stripped).
+
+    None (variable unset) gives `default`; any other value is true.
+    """
+    if value is None:
+        return default
+    return value.strip().lower() not in ("false", "0", "no")
+
+
 # Config from environment
 load_dotenv()
 STREAM_URL = os.getenv("STREAM_URL")
@@ -34,7 +44,7 @@ AZURACAST_STATION_ID = os.getenv("AZURACAST_STATION_ID")
 # Per-station identity and state location
 STATE_DIR = os.getenv("STATE_DIR", ".")
 STATION_NAME = os.getenv("STATION_NAME", "")
-STREAMERS_ENABLED = os.getenv("STREAMERS_ENABLED", "true").strip().lower() not in ("false", "0", "no")
+STREAMERS_ENABLED = parse_bool_env(os.getenv("STREAMERS_ENABLED"))
 
 _PATHS = state_paths(STATE_DIR)
 
@@ -59,7 +69,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(me
 class MonitorState(Enum):
     NO_STREAMER = "no_streamer"           # No streamer connected, 2-minute rule
     STREAMER_ACTIVE = "streamer_active"   # Streamer connected, escalating 2/4/6-minute alerts
-    GRACE_PERIOD = "grace_period"         # Future: streamer acknowledged issues
+    GRACE_PERIOD = "grace_period"         # Alerts paused by a grace period, with or without a streamer
 
 import atexit
 import signal
@@ -455,7 +465,7 @@ def run_check(ctx):
 def check_required_config(webhook_url) -> None:
     """Exit if the Discord webhook is missing (DiscordNotifier swallows post errors,
     so without this the monitor would run healthy but mute)."""
-    if not webhook_url:
+    if not (webhook_url or "").strip():
         logging.error("DISCORD_WEBHOOK_URL is not set; refusing to start.")
         raise SystemExit(1)
 
