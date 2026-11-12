@@ -19,6 +19,7 @@ three (no streamers), AutoDJ stalls. Staff get a Discord alert and fix it in Azu
 
 1. Silence alerts for all four stations, in the existing staff channel, each naming its station.
 2. Grace periods (`!woi`, `!cg`, `!gs`) are **per station**; each station can need maintenance alone.
+   A grace period silences that station's alerts whether or not a streamer is connected.
 3. Now-playing for the main station is unchanged (posts to the main channel).
 4. A second Discord channel, the **status board**, shows one message per *secondary* station
    (three), edited in place on each track change. No new posts, no pings.
