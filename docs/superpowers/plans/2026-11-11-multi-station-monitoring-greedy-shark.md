@@ -19,19 +19,22 @@
 - Every notifier message and alert, when a station name is set, carries `[<name>] ` immediately after the leading `🦈 **` (before the message text).
 - `!woi`, `!cg`, `!gs`, `!shark-status` need a station name; with none or an unknown one they refuse, list valid names, and never default.
 - `!streamers`, `!shark`, `!retrack`, `!unshark`, `!sharked` act only on the one station with `streamers_enabled: true`.
+- A grace period silences a station's alerts whether or not a streamer is connected (added by plan review; today it only does so when a streamer is connected).
 - No auto-suspend, no `!restart` command, no change to alert wording beyond the prefix.
 - Branch workflow: implement on `feat/multi-station-monitoring`, branched from `docs/multi-station-design` (so the spec travels). Never commit to `main`. One commit per task; Joe splits/merges.
 - Be polite to servers: no extra AzuraCast polling (streamer-less stations poll it zero times).
 
 ## Review Focus
 
-Failure modes the spec implies; each has a test in the owning task.
+Failure modes the spec implies (seven, not five: two were found in plan review); each has a test in the owning task.
 
-1. A typo'd, mis-cased, or missing station name must never pause monitoring on some default station (Task 4).
-2. `!woi` on one station must leave every other station's grace period and monitor state alone (Task 4).
-3. A `STREAMERS_ENABLED=false` monitor must never call AzuraCast's streamer check (Task 3).
-4. A malformed `stations.json` (bad JSON, missing key, duplicate names ignoring case, two streamer stations) must fail fast with a clear message, not half-start the bot (Task 1).
-5. With no new env vars set, files, messages, and behaviour are exactly today's (Tasks 2 and 3).
+1. A typo'd, mis-cased, or missing station name must never pause monitoring on some default station (Task 5).
+2. `!woi` on one station must leave every other station's grace period and monitor state alone (Task 5).
+3. `!woi` on a station with no streamer connected must actually silence its alerts and announce start and end; today it does nothing there (Task 4).
+4. A `STREAMERS_ENABLED=false` monitor must never call AzuraCast's streamer check (Task 3).
+5. A malformed `stations.json` (bad JSON, missing key, duplicate names ignoring case, two streamer stations) must fail fast with a clear message, not half-start the bot (Task 1).
+6. A monitor started without `DISCORD_WEBHOOK_URL` (for example a compose `env_file` slip) must exit with an error, not run silently mute (Task 3).
+7. With no new env vars set, files, messages, and behaviour are exactly today's (Tasks 2 and 3).
 
 ## File Structure
 
@@ -109,7 +112,7 @@ Failure modes the spec implies; each has a test in the owning task.
 
 ---
 
-### Task 3: Station name in alerts; streamer-less monitors skip the AzuraCast poll
+### Task 3: Station name in alerts; streamer-less monitors skip the AzuraCast poll; fail fast without a webhook
 
 **Files:**
 - Modify: `notifier.py` (`DiscordNotifier`), `monitor_stream.py` (`MonitorContext`, `run_check`, `monitor_loop`)
@@ -122,6 +125,7 @@ Failure modes the spec implies; each has a test in the owning task.
   - `MonitorContext.__init__(self, notifier, azuracast, sample_fn, streamers_enabled: bool = True)`; stores `self.streamers_enabled`.
   - `run_check`: when `ctx.streamers_enabled` is false, uses `(False, None, None)` instead of calling `ctx.azuracast.check_streamer_connected()`.
   - `monitor_loop` passes `station_name=STATION_NAME` and `streamers_enabled=STREAMERS_ENABLED`.
+  - `def check_required_config(webhook_url: str | None) -> None`: if `webhook_url` is empty or `None`, logs an error naming `DISCORD_WEBHOOK_URL` and raises `SystemExit(1)`. `monitor_loop` calls it first, before any other work. (Why: `DiscordNotifier` swallows post errors, so a missing webhook would otherwise run healthy and mute.)
 
 - [ ] **Step 1: Write failing tests**
   - `test_notifier.py`, patching `notifier.requests.post` to return `Mock(status_code=204)` and reading `call_args.kwargs["json"]["content"]`:
@@ -131,14 +135,53 @@ Failure modes the spec implies; each has a test in the owning task.
   - `test_monitor.py`:
     - `test_streamerless_monitor_never_polls_azuracast`: `ctx = make_ctx(...)` with `streamers_enabled=False`, `azuracast=Mock()`, `sample_fn=Mock(return_value=None)`; after `run_check(ctx)`, `azuracast.check_streamer_connected.assert_not_called()`, `ctx.state == MonitorState.NO_STREAMER`, `ctx.consecutive_silent_checks == 1`.
     - `test_streamers_enabled_defaults_true`: default `MonitorContext(...)` still calls the check once per `run_check`.
+    - `test_check_required_config_exits_without_webhook`: `check_required_config("")` and `check_required_config(None)` raise `SystemExit` with code 1; `check_required_config("https://x")` returns `None`.
 - [ ] **Step 2: Run** the two files. Expected: new tests FAIL.
 - [ ] **Step 3: Implement** per Interfaces. Update `make_ctx` in `test_monitor.py` to accept `streamers_enabled=True`.
 - [ ] **Step 4: Run the full suite.** Expected: all pass.
-- [ ] **Step 5: Commit** `feat: prefix alerts with station name; skip streamer poll when streamers disabled`
+- [ ] **Step 5: Commit** `feat: prefix alerts with station name; skip streamer poll when streamers disabled; fail fast without webhook`
 
 ---
 
-### Task 4: Bot resolves a station for grace-period commands
+### Task 4: Grace period applies when no streamer is connected
+
+**Files:**
+- Modify: `monitor_stream.py` (`determine_next_state` ~262, `handle_state_transition` ~284)
+- Test: `test_monitor.py`
+
+**Interfaces:**
+- Consumes: `MonitorState`, `MonitorContext` (existing).
+- Produces: the new `determine_next_state(ctx, is_streamer_connected, grace_period_active)` table (first matching row wins):
+
+| current state | grace active | streamer connected | next |
+|---|---|---|---|
+| `STREAMER_ACTIVE` | yes | any | `GRACE_PERIOD` |
+| `NO_STREAMER` | yes | any (**new**: also when no streamer) | `GRACE_PERIOD` |
+| `GRACE_PERIOD` | yes | no (**new**: stay, do not drop to `NO_STREAMER`) | `None` |
+| `GRACE_PERIOD` | no | yes / no | `STREAMER_ACTIVE` / `NO_STREAMER` |
+| `NO_STREAMER` | no | yes | `STREAMER_ACTIVE` |
+| `STREAMER_ACTIVE` | no | no | `NO_STREAMER` |
+| anything else | | | `None` |
+
+  Messages from `handle_state_transition` (through `ctx.notifier.send_message`):
+  - `NO_STREAMER` → `GRACE_PERIOD` with `streamer_name is None`: `"Grace period activated. Monitoring paused."`. With a streamer name (existing path): no message, unchanged.
+  - `GRACE_PERIOD` → `NO_STREAMER`: `"Grace period expired. Normal monitoring resumed."`.
+  - `GRACE_PERIOD` → `STREAMER_ACTIVE`: when `ctx.streamer_name` is still `None`, first set `ctx.streamer_id`/`ctx.streamer_name` from the arguments (a streamer connected during grace), then send the existing "expired for '<name>'" message.
+
+- [ ] **Step 1: Write failing tests** in `test_monitor.py` (add; leave the existing `TestDetermineNextState` tests, which must still pass):
+  - `test_no_streamer_with_grace_goes_to_grace_period`: `determine_next_state(ctx, False, True) == GRACE_PERIOD` from `NO_STREAMER`.
+  - `test_grace_period_stays_when_streamer_absent_and_grace_active`: from `GRACE_PERIOD`, `(False, True)` → `None`.
+  - `test_grace_silences_alerts_with_no_streamer`: run `run_check` four times with `sample_fn=Mock(return_value=None)`, a `FileNotifier`, and `check_grace_period_active` patched to return `True`; assert the notifier recorded exactly one record, the "Grace period activated" message, and no `alert` records.
+  - `test_grace_expiry_resumes_alerts_with_no_streamer`: after the above, patch grace to `False`; assert one more "Grace period expired" message, state `NO_STREAMER`, and that continued silence alerts at the normal threshold again.
+  - `test_streamer_connecting_during_grace_is_recorded_on_expiry`: state `GRACE_PERIOD` with no streamer info; `handle_state_transition(ctx, STREAMER_ACTIVE, "DJ", 5)` sets `ctx.streamer_name == "DJ"`, `ctx.streamer_id == 5`.
+- [ ] **Step 2: Run** `pytest test_monitor.py -q`. Expected: new tests FAIL.
+- [ ] **Step 3: Implement** the table and messages above. Reuse the existing counter reset in `handle_state_transition`.
+- [ ] **Step 4: Run the full suite.** Expected: all pass.
+- [ ] **Step 5: Commit** `fix: grace periods also silence alerts when no streamer is connected`
+
+---
+
+### Task 5: Bot resolves a station for grace-period commands
 
 **Files:**
 - Modify: `grace_period_bot.py` (config block, `handle_working_on_it`, `handle_cancel_grace`, `handle_grace_status`, `handle_shark_status`, their `@bot.command` wrappers)
@@ -167,14 +210,14 @@ Failure modes the spec implies; each has a test in the owning task.
 
 ---
 
-### Task 5: Streamer commands route to the streamers station; help text
+### Task 6: Streamer commands route to the streamers station; help text
 
 **Files:**
 - Modify: `grace_period_bot.py` (`handle_shark_help`, streamer command wrappers: `!streamers`, `!shark`, `!retrack`, `!unshark`, `!sharked`)
 - Test: `test_bot.py`
 
 **Interfaces:**
-- Consumes: Task 4 globals and helpers; `streamer_station` (Task 1); `add_auto_suspended_streamer`/`remove_auto_suspended_streamer`/`load_auto_suspended_streamers` with `path=` (Task 2).
+- Consumes: Task 5 globals and helpers; `streamer_station` (Task 1); `add_auto_suspended_streamer`/`remove_auto_suspended_streamer`/`load_auto_suspended_streamers` with `path=` (Task 2).
 - Produces:
   - `class StreamerTools(NamedTuple): client; track_fn; untrack_fn; load_fn`
   - `def streamer_tools(station: Station, base_url: str, api_key: str) -> StreamerTools`: `client` is an `AzuracastClient` for `station.azuracast_station_id`; `track_fn`/`untrack_fn`/`load_fn` are `functools.partial`s of the Task 2 functions bound to `station.paths.suspended`.
@@ -194,7 +237,7 @@ Failure modes the spec implies; each has a test in the owning task.
 
 ---
 
-### Task 6: Compose template, env examples, docs, health script
+### Task 7: Compose template, env examples, docs, health script
 
 **Files:**
 - Modify: `docker-compose.yml`, `README.md`, `check_shark_health.sh`, `.gitignore`
@@ -205,9 +248,9 @@ Failure modes the spec implies; each has a test in the owning task.
 - Produces: a runnable compose stack. Station names `radiospiral` (streamers), `pulse`, `inner`, `outer` are placeholders from the wiki: **confirm the AzuraCast shortcodes on the test server** (`radiospiral` is the main station's known shortcode).
 
 - [ ] **Step 1: Rewrite `docker-compose.yml`:**
-  - Shared `x-shark-common` block (build, `network_mode: host`, `restart: unless-stopped`, `env_file: [.env]`).
-  - One monitor service per station (`monitor-radiospiral`, `monitor-pulse`, `monitor-inner`, `monitor-outer`) adding `env_file: stations/<name>.env`, volume `./state/<name>:/state`, `command: python monitor_stream.py`, and a healthcheck that checks `$STATE_DIR/.monitor_state` mtime within 120s (`python -c` using `os.getenv('STATE_DIR','.')`).
-  - One `bot` service: volumes `./state:/state` and `./stations.json:/app/stations.json:ro`, `command: python grace_period_bot.py`, healthcheck unchanged, `depends_on` all monitors.
+  - Shared `x-shark-common` block (build, `network_mode: host`, `restart: unless-stopped`). It does **not** hold `env_file`: a service-level `env_file` replaces a merged one rather than adding to it, so every service lists both files itself.
+  - One monitor service per station (`monitor-radiospiral`, `monitor-pulse`, `monitor-inner`, `monitor-outer`) `env_file: [.env, stations/<name>.env]` (later file wins), volume `./state/<name>:/state`, `command: python monitor_stream.py`, and a healthcheck that checks `$STATE_DIR/.monitor_state` mtime within 120s (`python -c` using `os.getenv('STATE_DIR','.')`).
+  - One `bot` service (`env_file: [.env]`): volumes `./state:/state` and `./stations.json:/app/stations.json:ro`, `command: python grace_period_bot.py`, healthcheck unchanged, `depends_on` all monitors.
   - No `container_name` (so a test stack with `-p spiraltest` cannot collide with prod). Remove the unused `networks:` block.
   - Each `stations/<name>.env.example` sets `STATION_NAME`, `STREAM_URL`, `AZURACAST_STATION_ID`, `STATE_DIR=/state`, and `STREAMERS_ENABLED=false` for the three streamer-less stations (omitted/true for radiospiral).
   - `stations.json.example` lists the four stations with `"state_dir": "/state/<name>"`, `radiospiral` with `"streamers_enabled": true`.
@@ -216,7 +259,8 @@ Failure modes the spec implies; each has a test in the owning task.
 - [ ] **Step 4: Rewrite `check_shark_health.sh`** to loop over the containers of the current compose project (`docker ps -a --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME:-$(basename "$PWD")}" --format '{{.Names}}'`), printing status/health/restarts for each and keeping the exit codes 0 (all running and healthy), 1 (running, unhealthy), 2 (any not running).
 - [ ] **Step 5: Verify:**
   - `python3 -c "import station; print(station.station_names(station.load_stations('stations.json.example')))"` prints `radiospiral, pulse, inner, outer`.
-  - Copy each `*.env.example` to `*.env` in a scratch copy and run `docker compose config -q` (expected: no output, exit 0). If Docker is not installed on this Mac, say so and leave this check for the test server.
+  - Copy each `*.env.example` to `*.env` in a scratch copy and run `docker compose config -q` (expected: no output, exit 0). If Docker is not installed on this Mac (it is not, as of 2026-11-11), say so and leave this and the next check for the test server.
+  - On the test server run `docker compose config` and confirm that **each monitor's environment contains both** `DISCORD_WEBHOOK_URL` (from `.env`) and `STATION_NAME` (from its station file). `-q` alone does not prove the shared file was kept.
   - `bash -n check_shark_health.sh` passes.
 - [ ] **Step 6: Commit** `feat: per-station compose template, example configs, docs, health script`
 
@@ -224,9 +268,10 @@ Failure modes the spec implies; each has a test in the owning task.
 
 ## Self-review (spec coverage)
 
-- Per-station monitor env, `STATE_DIR`, name in alerts, streamer poll skipped: Tasks 2-3.
-- Single bot, station argument, refuse-don't-default, per-station grace isolation: Task 4.
-- Streamer commands only on the streamers station: Task 5.
-- Compose template, per-station env, test-stack isolation (project name, no `container_name`, separate state dirs and webhooks): Task 6.
+- Per-station monitor env, `STATE_DIR`, name in alerts, streamer poll skipped, fail-fast without webhook: Tasks 2-3.
+- Per-station grace that also works with no streamer connected (design goal 2): Task 4 (spec needs one matching line; see handoff).
+- Single bot, station argument, refuse-don't-default, per-station grace isolation: Task 5.
+- Streamer commands only on the streamers station: Task 6.
+- Compose template, explicit per-service env lists, test-stack isolation (project name, no `container_name`, separate state dirs and webhooks): Task 7.
 - Rollout step 5's restarter and everything in `discord-az-monitor` (hardcoded station, watchdog, status board, SQLite store) belong to the second plan. The restarter's behaviour is still unverified on prod.
 - Alerts that name the station in a server-wide outage remain four pings (accepted Known limitation, no task).
