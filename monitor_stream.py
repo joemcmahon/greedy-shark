@@ -16,6 +16,7 @@ from datetime import datetime
 
 from azuracast_client import AzuracastClient
 from notifier import DiscordNotifier, Notifier
+from station import state_paths
 
 # Config from environment
 load_dotenv()
@@ -30,14 +31,26 @@ AZURACAST_BASE_URL = os.getenv("AZURACAST_BASE_URL")
 AZURACAST_API_KEY = os.getenv("AZURACAST_API_KEY")
 AZURACAST_STATION_ID = os.getenv("AZURACAST_STATION_ID")
 
+# Per-station identity and state location
+STATE_DIR = os.getenv("STATE_DIR", ".")
+STATION_NAME = os.getenv("STATION_NAME", "")
+STREAMERS_ENABLED = os.getenv("STREAMERS_ENABLED", "true").strip().lower() not in ("false", "0", "no")
+
+_PATHS = state_paths(STATE_DIR)
+
 # Grace period configuration
-GRACE_PERIOD_FILE = ".grace_period_until"
+GRACE_PERIOD_FILE = _PATHS.grace
 
 # Auto-suspension tracking
-AUTO_SUSPENDED_FILE = ".auto_suspended_streamers"
+AUTO_SUSPENDED_FILE = _PATHS.suspended
 
 # Monitor state tracking (shared with bot)
-MONITOR_STATE_FILE = ".monitor_state"
+MONITOR_STATE_FILE = _PATHS.monitor_state
+
+
+def ensure_state_dir(state_dir=None):
+    """Create the state directory if it does not exist."""
+    os.makedirs(state_dir or STATE_DIR, exist_ok=True)
 
 # Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
@@ -55,16 +68,17 @@ def kill_handler(*args):
     sys.exit(0)
 
 
-def check_grace_period_active():
+def check_grace_period_active(path=None):
     """
     Check if a grace period is currently active by reading the timestamp file.
     Returns True if grace period is active, False otherwise.
     """
+    path = path or GRACE_PERIOD_FILE
     try:
-        if not os.path.exists(GRACE_PERIOD_FILE):
+        if not os.path.exists(path):
             return False
 
-        with open(GRACE_PERIOD_FILE, 'r') as f:
+        with open(path, 'r') as f:
             content = f.read().strip()
 
         # Empty file means no grace period
@@ -78,7 +92,7 @@ def check_grace_period_active():
             return True
         else:
             # Grace period expired, clean up the file
-            os.remove(GRACE_PERIOD_FILE)
+            os.remove(path)
             return False
 
     except Exception as e:
@@ -86,30 +100,32 @@ def check_grace_period_active():
         return False
 
 
-def check_and_fix_suspended_file_path():
-    if os.path.exists(AUTO_SUSPENDED_FILE) and not os.path.isfile(AUTO_SUSPENDED_FILE):
+def check_and_fix_suspended_file_path(path=None):
+    path = path or AUTO_SUSPENDED_FILE
+    if os.path.exists(path) and not os.path.isfile(path):
         logging.warning(
             "'%s' is a directory, not a file — removing it so the bot can start cleanly",
-            AUTO_SUSPENDED_FILE,
+            path,
         )
-        shutil.rmtree(AUTO_SUSPENDED_FILE)
+        shutil.rmtree(path)
 
 
-def load_auto_suspended_streamers():
+def load_auto_suspended_streamers(path=None):
     """
     Load the list of auto-suspended streamers from file.
     Returns dict: {streamer_id: {name, suspended_at, reason}}
     """
-    if os.path.exists(AUTO_SUSPENDED_FILE) and not os.path.isfile(AUTO_SUSPENDED_FILE):
+    path = path or AUTO_SUSPENDED_FILE
+    if os.path.exists(path) and not os.path.isfile(path):
         raise RuntimeError(
-            f"'{AUTO_SUSPENDED_FILE}' exists but is a directory, not a file — "
+            f"'{path}' exists but is a directory, not a file — "
             "remove it and restart the bot"
         )
     try:
-        if not os.path.exists(AUTO_SUSPENDED_FILE):
+        if not os.path.exists(path):
             return {}
 
-        with open(AUTO_SUSPENDED_FILE, 'r') as f:
+        with open(path, 'r') as f:
             return json.load(f)
 
     except Exception as e:
@@ -117,48 +133,51 @@ def load_auto_suspended_streamers():
         return {}
 
 
-def save_auto_suspended_streamers(suspended_dict):
+def save_auto_suspended_streamers(suspended_dict, path=None):
     """
     Save the list of auto-suspended streamers to file.
     """
-    if os.path.exists(AUTO_SUSPENDED_FILE) and not os.path.isfile(AUTO_SUSPENDED_FILE):
+    path = path or AUTO_SUSPENDED_FILE
+    if os.path.exists(path) and not os.path.isfile(path):
         raise RuntimeError(
-            f"'{AUTO_SUSPENDED_FILE}' exists but is a directory, not a file — "
+            f"'{path}' exists but is a directory, not a file — "
             "remove it and restart the bot"
         )
     try:
-        with open(AUTO_SUSPENDED_FILE, 'w') as f:
+        with open(path, 'w') as f:
             json.dump(suspended_dict, f, indent=2)
 
     except Exception as e:
         logging.error(f"Error saving auto-suspended streamers: {e}")
 
 
-def add_auto_suspended_streamer(streamer_id, streamer_name, reason="staff action"):
+def add_auto_suspended_streamer(streamer_id, streamer_name, reason="staff action", path=None):
     """
     Add a streamer to the auto-suspension tracking list.
     """
-    suspended = load_auto_suspended_streamers()
+    path = path or AUTO_SUSPENDED_FILE
+    suspended = load_auto_suspended_streamers(path)
     suspended[str(streamer_id)] = {
         "name": streamer_name,
         "suspended_at": datetime.now().isoformat(),
         "reason": reason
     }
-    save_auto_suspended_streamers(suspended)
+    save_auto_suspended_streamers(suspended, path)
     logging.info(f"Added {streamer_name} (ID: {streamer_id}) to auto-suspended list")
 
 
-def remove_auto_suspended_streamer(streamer_id):
+def remove_auto_suspended_streamer(streamer_id, path=None):
     """
     Remove a streamer from the auto-suspension tracking list.
     Returns True if removed, False if not found.
     """
-    suspended = load_auto_suspended_streamers()
+    path = path or AUTO_SUSPENDED_FILE
+    suspended = load_auto_suspended_streamers(path)
     streamer_id_str = str(streamer_id)
 
     if streamer_id_str in suspended:
         del suspended[streamer_id_str]
-        save_auto_suspended_streamers(suspended)
+        save_auto_suspended_streamers(suspended, path)
         logging.info(f"Removed streamer ID {streamer_id} from auto-suspended list")
         return True
 
@@ -361,8 +380,9 @@ def handle_silence_by_state(ctx):
         handle_grace_period_silence(ctx)
 
 
-def save_monitor_state(ctx):
+def save_monitor_state(ctx, path=None):
     """Save current monitor state to file for bot access."""
+    path = path or MONITOR_STATE_FILE
     try:
         state_data = {
             "state": ctx.state.value,
@@ -371,7 +391,7 @@ def save_monitor_state(ctx):
             "streamer_id": ctx.streamer_id,
             "timestamp": time.time()
         }
-        with open(MONITOR_STATE_FILE, 'w') as f:
+        with open(path, 'w') as f:
             json.dump(state_data, f)
     except Exception as e:
         logging.error(f"Error saving monitor state: {e}")
@@ -410,6 +430,7 @@ def run_check(ctx):
 
 
 def monitor_loop():
+    ensure_state_dir()
     notifier = DiscordNotifier(DISCORD_WEBHOOK_URL, STAFF_ROLE_ID)
     client = AzuracastClient(AZURACAST_BASE_URL, AZURACAST_API_KEY, AZURACAST_STATION_ID)
     ctx = MonitorContext(notifier=notifier, azuracast=client, sample_fn=grab_audio_sample)

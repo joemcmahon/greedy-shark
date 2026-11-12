@@ -16,6 +16,10 @@ from monitor_stream import (
     load_auto_suspended_streamers,
     save_auto_suspended_streamers,
     check_and_fix_suspended_file_path,
+    add_auto_suspended_streamer,
+    remove_auto_suspended_streamer,
+    save_monitor_state,
+    ensure_state_dir,
     run_check,
     SILENCE_ALERT_LEVEL,
     NO_STREAMER_REPEAT_INTERVAL,
@@ -634,3 +638,61 @@ class TestCheckAndFixSuspendedFilePath:
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
+
+
+# --- Per-station state paths ---
+
+def test_state_functions_use_explicit_path(tmp_path):
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    a_file = str(a / ".auto_suspended_streamers")
+    b_file = str(b / ".auto_suspended_streamers")
+
+    add_auto_suspended_streamer(1, "DJ", reason="r", path=a_file)
+
+    assert "1" in load_auto_suspended_streamers(path=a_file)
+    assert load_auto_suspended_streamers(path=b_file) == {}
+
+    remove_auto_suspended_streamer(1, path=a_file)
+    assert load_auto_suspended_streamers(path=a_file) == {}
+
+
+def test_grace_period_checked_per_path(tmp_path):
+    a = tmp_path / ".grace_a"
+    b = tmp_path / ".grace_b"
+    a.write_text(str(time.time() + 600))
+
+    assert check_grace_period_active(path=str(a)) is True
+    assert check_grace_period_active(path=str(b)) is False
+
+
+def test_expired_grace_file_removed_at_given_path(tmp_path):
+    a = tmp_path / ".grace_a"
+    a.write_text(str(time.time() - 600))
+
+    assert check_grace_period_active(path=str(a)) is False
+    assert not a.exists()
+
+
+def test_save_monitor_state_writes_given_path(tmp_path):
+    import json
+    p = tmp_path / ".monitor_state"
+    save_monitor_state(make_ctx(), path=str(p))
+    assert "state" in json.loads(p.read_text())
+
+
+def test_ensure_state_dir_creates_missing_dir(tmp_path):
+    d = tmp_path / "x" / "y"
+    ensure_state_dir(str(d))
+    assert d.is_dir()
+    ensure_state_dir(str(d))
+
+
+def test_default_state_paths_are_todays_files():
+    from station import state_paths
+    sp = state_paths(".")
+    assert os.path.basename(sp.grace) == ".grace_period_until"
+    assert os.path.basename(sp.suspended) == ".auto_suspended_streamers"
+    assert os.path.basename(sp.monitor_state) == ".monitor_state"
