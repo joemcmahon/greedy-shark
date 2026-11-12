@@ -123,11 +123,10 @@ Older versions also read `FFMPEG_TIMEOUT`, `MIN_RMS_THRESHOLD`, `MIN_VARIANCE_TH
 From the project directory:
 
 ```bash
-# Create the shared state files FIRST. If they don't exist, Docker creates
-# directories with these names instead, and the Shark can't use them.
-touch .grace_period_until .auto_suspended_streamers .monitor_state
+# FIRST, follow "Multiple stations" below: create stations/<name>.env from the
+# examples, create stations.json, and (if upgrading) migrate the old state files.
 
-# Build and start both services
+# Build and start the bot and one monitor per station
 docker compose up -d --build
 
 # Watch the logs
@@ -137,7 +136,7 @@ docker compose logs -f
 docker compose down
 ```
 
-This builds one image (Python 3.10 + ffmpeg) and starts one `monitor-<station>` container per station plus one `bot` container (names are prefixed with the compose project name, which defaults to the directory name). They use host networking, restart automatically unless stopped, and share state through bind-mounted directories under `state/`. See "Multiple stations" below for the per-station setup; the `touch` command above is only for the plain-Python single-station setup.
+This builds one image (Python 3.10 + ffmpeg) and starts one `monitor-<station>` container per station plus one `bot` container (names are prefixed with the compose project name, which defaults to the directory name). They use host networking, restart automatically unless stopped, and share state through bind-mounted directories under `state/`. See "Multiple stations" below for the per-station setup.
 
 Notes:
 - The containers get `.env` (and, for monitors, `stations/<name>.env`) at startup through `env_file`; they are not baked into the image. After editing them, run `docker compose up -d` again to recreate the containers.
@@ -162,7 +161,7 @@ State layout: each monitor mounts `./state/<name>` as `/state` and keeps its thr
 mkdir -p state/radiospiral && mv .grace_period_until .auto_suspended_streamers .monitor_state state/radiospiral/
 ```
 
-Without this, the monitor would start with empty state, and if the old state files are still where compose expects mounts, Docker would create directories named like the old state files. Then create `stations/radiospiral.env` and the other files as above.
+Without this, Docker creates empty `state/<name>` directories and the monitors start with empty state; the old root-level files are simply ignored. Then create `stations/radiospiral.env` and the other files as above.
 
 ### Bot commands per station
 
@@ -175,6 +174,9 @@ sudo apt-get install ffmpeg          # or your platform's equivalent
 python3 -m venv monitor-venv
 . monitor-venv/bin/activate
 pip install -r requirements.txt
+
+# The state files must exist in the project directory
+touch .grace_period_until .auto_suspended_streamers .monitor_state
 
 # Run both, from the project directory, in separate terminals or under systemd/tmux
 python monitor_stream.py
