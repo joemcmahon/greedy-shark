@@ -1,10 +1,11 @@
 # Multi-Station Monitoring: Design
 
 **Date:** 2026-11-11
-**Status:** Draft, revised after pushback review 2026-11-11; awaiting Joe's approval
+**Status:** Draft, revised after pushback reviews 2026-11-11. The greedy-shark half is implemented and merged; the discord-az-monitor half was re-baselined on `origin/main` (8be61ac) and awaits its plan.
 
 Covers two repos: `greedy-shark` (silence monitor + Discord bot) and `discord-az-monitor`
-(now-playing monitor, runs on prod as `az-now-playing`). Each gets its own implementation plan.
+(now-playing monitor, GitHub `joemcmahon/python-azuracast-monitor`, runs on prod as `az-now-playing`).
+Each gets its own implementation plan.
 
 ## Intent
 
@@ -35,7 +36,8 @@ three (no streamers), AutoDJ stalls. Staff get a Discord alert and fix it in Azu
 - Putting the main station on the status board. **Decided** against.
 - A "metadata out of sync" notice in Discord when the now-playing monitor cannot reconnect.
   **Decided** against for now: if the server is unreachable the music stopping is the louder
-  signal; the container exits and is restarted. Revisit if a frozen board misleads people.
+  signal; the heartbeat goes stale, the container is reported unhealthy and restarted. Revisit if a
+  frozen board misleads people.
 - Coordinating alerts across stations during a server-wide outage (see Known limitations).
 
 ## Anti-goals (would make this a failure even if it works)
@@ -79,31 +81,50 @@ three (no streamers), AutoDJ stalls. Staff get a Discord alert and fix it in Azu
 
 ### discord-az-monitor (one container per station; one image)
 
-- Move every hardcoded station reference to env settings: the host and shortcode passed to
-  `build_sse_client` at `azmonitor.py:67`; the `connect`-event lookup key in `azclient.py`
-  (`['subs']['station:radiospiral']`, ~line 138), which must be built from the shortcode setting;
-  and the AutoDJ display name (`"Spud the Ambient Robot"`, `azclient.py` ~line 100), now a setting
-  that defaults to that value so prod behaviour is unchanged. (Line numbers are from a local copy
-  that was behind GitHub; re-check after pulling.)
-- New mode `STATUS_BOARD` (default off = today's behaviour: post a new message per track).
-  When on: on first run POST to the webhook with `?wait=true`, save the returned message ID in a
-  state file; on each track change PATCH that message. If the saved message is gone (404), post a
-  new one and save the new ID. *(Discord webhook message-edit endpoint is from memory, not yet
-  tested; the test server is where this gets verified. Fallback if it fails: delete + repost.)*
-- Connection health: on the SSE `connect` message, read its `ping` value (max interval between
-  server messages; in Joe's experience with another client, messages arrive about every 15s for a
-  ping of 25) and set a watchdog of 2x that, with a configured fallback (e.g. 60s) if the field is
-  absent. Every received message resets the watchdog. If it fires, reconnect with exponential
-  backoff and a retry limit. When retries are exhausted the process exits non-zero.
-- Heartbeat file is touched only on received SSE messages and successful (re)connects, never from
-  a timer, so a dead connection can never look healthy. The healthcheck window exceeds the
-  watchdog. (A long track means no status edits for minutes; keepalives still arrive, so this is
-  normal.) Reconnecting re-delivers the current track; the monitor's existing "has the metadata
-  changed?" comparison prevents a duplicate post or a pointless edit.
-- Status-board state (message ID, plus the time and value last seen) is kept in a per-station
-  SQLite file in a mounted volume, so a container recreate (every deploy) keeps editing the same
-  message instead of posting a new one and orphaning the old. Each status message starts with the
-  station name so a stray orphan is recognisable.
+**Baseline:** this section is written against `origin/main` of the repo (8be61ac, 2026-11-11).
+Already there, not to be redone: the shortcode is passed into `run(client, callback, shortcode)`
+and builds the `station:<shortcode>` connect key; `ResilientRunner` reconnects with exponential
+backoff plus jitter (cap 5 minutes) and infinite retries; the SSE read timeout is 300s; logging,
+environment validation, signal handling, tests and CI exist. Line numbers below are from that
+version; re-check after pulling.
+
+- **Station settings.** The host and shortcode (`STATION_SERVER`, `STATION_SHORTCODE` in
+  `azmonitor.py`, currently `spiral.radio` / `radiospiral`) come from env, with those defaults so
+  prod is unchanged. The AutoDJ display name (`"Spud the Ambient Robot"` in `extract_metadata`) is a
+  setting defaulting to that value.
+- **No secrets in the image.** The `Dockerfile` must not copy `.env` (today: `COPY *.py .env .`),
+  and a `.dockerignore` excludes it. Each service gets its settings from compose `env_file`. The
+  existing main container's webhook currently comes only from the baked `.env`, so its migration
+  must give it an `env_file` before the first rebuild, or it loses its webhook.
+- **Status-board mode** (`STATUS_BOARD`, default off = today's behaviour: post a new message per
+  track). When on, the monitor reads its own `STATUS_BOARD_WEBHOOK` and never reads
+  `NOW_PLAYING_WEBHOOK`; if `STATUS_BOARD_WEBHOOK` is empty it exits non-zero with a clear message.
+  (Reason: a missing variable must not fall back to the main channel's webhook.) The first run posts
+  and saves the returned message ID; each track change edits that message; if the saved message is
+  gone (404) it posts a new one and saves the new ID. `discord-webhook==1.3.1` provides this
+  (`execute()` sets the message id, `edit()` PATCHes; confirmed in the library source, not yet tested
+  against Discord, so verify on the test server; fallback if it fails: delete and repost).
+- **Timeouts.** Every webhook `execute`/`edit` has an explicit timeout (default 10s, configurable);
+  the library's default is none, so a Discord call that never answers would block the SSE loop.
+  The SSE read timeout is configurable (`SSE_READ_TIMEOUT`, default 300).
+- **One retry layer.** Keep `ResilientRunner` and its infinite retries. No second watchdog, no
+  ping-derived timer, and no exit-after-retries.
+- **Heartbeat and health.** A heartbeat file is touched only when an SSE message is received or a
+  (re)connection succeeds, never from a timer. A Docker healthcheck reads its mtime, with a window
+  longer than the read timeout. A monitor that cannot stay connected therefore goes unhealthy and is
+  restarted by the restarter (see Compose). A long track means no status edits for minutes, but
+  keepalives still arrive, so this is normal. Reconnecting re-delivers the current track; within
+  one process the existing comparison with the last track prevents a duplicate post or edit. After
+  a restart, main-channel mode posts the current track once more (in-memory comparison).
+- **Metadata parsing must not abort the connection.** The title split is
+  `track = ' - '.join(parts[:-1])` with the last part as the album (the current
+  `parts[:-2].join(' - ')` raises `AttributeError` for a title with two or more " - " parts and an
+  empty album), with a regression test. A parse failure on one event is logged and falls back to the
+  raw title and artist; it never escapes `run()`, so one bad event cannot cause a reconnect loop.
+- **Status state.** Message ID, plus the time and value last seen, is kept in a per-station SQLite
+  file in a mounted volume, so a container recreate (every deploy) keeps editing the same message
+  instead of posting a new one and orphaning the old. Each status message starts with the station
+  name so a stray orphan is recognisable.
 
 ### Compose and containers
 
@@ -112,11 +133,12 @@ three (no streamers), AutoDJ stalls. Staff get a Discord alert and fix it in Azu
 - Services: 4 shark monitors, 1 bot, 1 now-playing (main, post mode), 3 now-playing (status board).
 - Every now-playing container mounts its own state directory (same pattern as the shark
   monitors); the status-board ones require it.
-- A single restarter that watches containers by label and restarts unhealthy ones. **Open item
-  (Joe):** on prod, `discord-az-monitor-restarter-1` (a `docker:cli` loop) already exists and is
-  believed to restart the now-playing monitor when it stops reporting. Its exact behaviour is
-  unverified; its definition is not in either local repo. Verify on prod
-  (`docker logs` / `docker inspect`) before deciding whether to generalise it.
+- One restarter for all now-playing containers, selected by a label rather than by container name.
+  It is the existing `docker:cli` loop, generalised. As found in the repo's `docker-compose.yml`, the
+  prod restarter is not health-based: it sleeps until 05:00 and runs `docker restart az-now-playing`
+  once a day. The generalised one keeps that daily restart and also restarts any labelled container
+  reported unhealthy. The repo's fixed `container_name: az-now-playing` cannot serve several
+  stations: the main container may keep that name for continuity; the others are named per station.
 
 ### Test environment
 
@@ -137,8 +159,10 @@ three (no streamers), AutoDJ stalls. Staff get a Discord alert and fix it in Azu
 1. State/env parametrisation + station name in alerts (greedy-shark), tested single-station.
 2. Four monitors on the test server; verify per-station isolation and alerts.
 3. Bot station arguments; verify `!woi` on one station leaves the others alerting.
-4. `discord-az-monitor` env config, then status-board mode; verify edit-in-place on test.
-5. Compose template + restarter; then prod, one station at a time.
+4. `discord-az-monitor`, on top of `origin/main`: drop `.env` from the image and move settings to
+   `env_file` (main container first, same behaviour), then env-driven station settings and parsing
+   fix, then timeouts and heartbeat, then status-board mode; verify edit-in-place on test.
+5. Compose template + generalised restarter; then prod, one station at a time.
 
 ## Left to the builder
 
@@ -147,10 +171,14 @@ exact alert wording (must start with the station name).
 
 ## Verified vs not
 
-- Verified: current code is single-station (module-level env, three state files in cwd, one bot
-  client, hardcoded station in discord-az-monitor); prod runs `az-now-playing` (`azmonitor.py`),
-  the shark monitor/bot, and a `discord-az-monitor-restarter-1` container.
-- Not verified: Discord webhook edit behaviour; the restarter's logic; that AzuraCast's SSE
-  `connect` message carries `ping` and keepalives arrive at the rate described (Joe's experience
-  with another client; confirm on the test server); local `discord-az-monitor` was behind GitHub
-  at the time of writing (Joe is syncing it), so cited line numbers there may shift.
+- Verified (code read 2026-11-11): the greedy-shark half is implemented, merged and tested (170
+  tests). `origin/main` of discord-az-monitor already has `ResilientRunner`, a 300s SSE read timeout,
+  the shortcode-driven connect key, tests and CI; its `Dockerfile` copies `.env` into the image and
+  its compose file's restarter is a daily 05:00 `docker restart az-now-playing`;
+  `discord-webhook==1.3.1` has no default timeout and supports `execute()` id capture and `edit()`;
+  the three-part-title `AttributeError` reproduces against the GitHub version.
+- Not verified: Discord webhook edit behaviour against Discord; that AzuraCast's SSE `connect`
+  message carries `ping` and keepalives arrive about every 15s (Joe's experience with another
+  client; confirm on the test server); that the prod container was built from `origin/main`
+  (assumed); Compose behaviours (profiles, orphans, missing bind mounts) for the greedy-shark half
+  are for the test server.
