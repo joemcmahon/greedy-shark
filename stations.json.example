@@ -1,0 +1,6 @@
+[
+  {"name": "radiospiral", "state_dir": "/state/radiospiral", "azuracast_station_id": "radiospiral", "streamers_enabled": true},
+  {"name": "pulse", "state_dir": "/state/pulse", "azuracast_station_id": "pulse"},
+  {"name": "inner", "state_dir": "/state/inner", "azuracast_station_id": "inner"},
+  {"name": "outer", "state_dir": "/state/outer", "azuracast_station_id": "outer"}
+]

@@ -16,7 +16,13 @@ from monitor_stream import (
     load_auto_suspended_streamers,
     save_auto_suspended_streamers,
     check_and_fix_suspended_file_path,
+    add_auto_suspended_streamer,
+    remove_auto_suspended_streamer,
+    save_monitor_state,
+    ensure_state_dir,
     run_check,
+    check_required_config,
+    parse_bool_env,
     SILENCE_ALERT_LEVEL,
     NO_STREAMER_REPEAT_INTERVAL,
     STREAMER_DETECT_THRESHOLD,
@@ -26,12 +32,13 @@ from monitor_stream import (
 )
 
 
-def make_ctx(notifier=None, azuracast=None, sample_fn=None):
+def make_ctx(notifier=None, azuracast=None, sample_fn=None, streamers_enabled=True):
     """Build a MonitorContext with sensible test defaults."""
     return MonitorContext(
         notifier=notifier or Mock(),
         azuracast=azuracast or Mock(),
         sample_fn=sample_fn or Mock(return_value=None),
+        streamers_enabled=streamers_enabled,
     )
 
 
@@ -630,6 +637,230 @@ class TestCheckAndFixSuspendedFilePath:
         with caplog.at_level(logging.WARNING):
             check_and_fix_suspended_file_path()
         assert any("directory" in r.message.lower() for r in caplog.records)
+
+
+# --- Station name, streamer-less monitors, required config ---
+
+@patch('monitor_stream.save_monitor_state')
+@patch('monitor_stream.check_grace_period_active', return_value=False)
+def test_streamerless_monitor_never_polls_azuracast(_grace, _save):
+    azuracast = Mock()
+    ctx = make_ctx(azuracast=azuracast, sample_fn=Mock(return_value=None),
+                   streamers_enabled=False)
+    run_check(ctx)
+    azuracast.check_streamer_connected.assert_not_called()
+    assert ctx.state == MonitorState.NO_STREAMER
+    assert ctx.consecutive_silent_checks == 1
+
+
+@patch('monitor_stream.save_monitor_state')
+@patch('monitor_stream.check_grace_period_active', return_value=False)
+def test_streamers_enabled_defaults_true(_grace, _save):
+    azuracast = Mock()
+    azuracast.check_streamer_connected.return_value = (False, None, None)
+    ctx = MonitorContext(notifier=Mock(), azuracast=azuracast,
+                         sample_fn=Mock(return_value=None))
+    assert ctx.streamers_enabled is True
+    run_check(ctx)
+    azuracast.check_streamer_connected.assert_called_once()
+
+
+def test_check_required_config_exits_without_webhook():
+    for missing in ("", None):
+        with pytest.raises(SystemExit) as exc:
+            check_required_config(missing)
+        assert exc.value.code == 1
+    assert check_required_config("https://x") is None
+
+
+def test_check_required_config_rejects_whitespace_webhook():
+    with pytest.raises(SystemExit) as exc:
+        check_required_config("   \n")
+    assert exc.value.code == 1
+
+
+@pytest.mark.parametrize("value,expected", [
+    (None, True), ("", True), ("true", True), ("1", True), ("yes", True),
+    ("false", False), ("FALSE", False), (" False ", False),
+    ("0", False), ("no", False), ("No", False),
+    ("off", True),  # only false/0/no disable, as before
+])
+def test_parse_bool_env(value, expected):
+    assert parse_bool_env(value) is expected
+
+
+def test_parse_bool_env_default_applies_to_none_only():
+    assert parse_bool_env(None, default=False) is False
+    assert parse_bool_env("true", default=False) is True
+
+# --- Per-station state paths ---
+
+def test_state_functions_use_explicit_path(tmp_path):
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    a_file = str(a / ".auto_suspended_streamers")
+    b_file = str(b / ".auto_suspended_streamers")
+
+    add_auto_suspended_streamer(1, "DJ", reason="r", path=a_file)
+
+    assert "1" in load_auto_suspended_streamers(path=a_file)
+    assert load_auto_suspended_streamers(path=b_file) == {}
+
+    remove_auto_suspended_streamer(1, path=a_file)
+    assert load_auto_suspended_streamers(path=a_file) == {}
+
+
+def test_grace_period_checked_per_path(tmp_path):
+    a = tmp_path / ".grace_a"
+    b = tmp_path / ".grace_b"
+    a.write_text(str(time.time() + 600))
+
+    assert check_grace_period_active(path=str(a)) is True
+    assert check_grace_period_active(path=str(b)) is False
+
+
+def test_expired_grace_file_removed_at_given_path(tmp_path):
+    a = tmp_path / ".grace_a"
+    a.write_text(str(time.time() - 600))
+
+    assert check_grace_period_active(path=str(a)) is False
+    assert not a.exists()
+
+
+def test_save_monitor_state_writes_given_path(tmp_path):
+    import json
+    p = tmp_path / ".monitor_state"
+    save_monitor_state(make_ctx(), path=str(p))
+    assert "state" in json.loads(p.read_text())
+
+
+def test_ensure_state_dir_creates_missing_dir(tmp_path):
+    d = tmp_path / "x" / "y"
+    ensure_state_dir(str(d))
+    assert d.is_dir()
+    ensure_state_dir(str(d))
+
+
+def test_default_state_paths_are_todays_files():
+    from station import state_paths
+    sp = state_paths(".")
+    assert os.path.basename(sp.grace) == ".grace_period_until"
+    assert os.path.basename(sp.suspended) == ".auto_suspended_streamers"
+    assert os.path.basename(sp.monitor_state) == ".monitor_state"
+
+
+class TestGraceWithNoStreamer:
+    """Grace periods must silence alerts even when no streamer is connected."""
+
+    def test_no_streamer_with_grace_goes_to_grace_period(self):
+        ctx = make_ctx()
+        ctx.state = MonitorState.NO_STREAMER
+        assert determine_next_state(ctx, False, True) == MonitorState.GRACE_PERIOD
+
+    def test_grace_period_stays_when_streamer_absent_and_grace_active(self):
+        ctx = make_ctx()
+        ctx.state = MonitorState.GRACE_PERIOD
+        assert determine_next_state(ctx, False, True) is None
+
+    @patch('monitor_stream.save_monitor_state')
+    @patch('monitor_stream.check_grace_period_active', return_value=True)
+    def test_grace_silences_alerts_with_no_streamer(self, _grace, _save, tmp_path):
+        notifier = FileNotifier(tmp_path / "out.jsonl")
+        ctx = make_ctx(notifier=notifier, sample_fn=Mock(return_value=None),
+                       streamers_enabled=False)
+        ctx.state = MonitorState.NO_STREAMER
+
+        for _ in range(4):
+            run_check(ctx)
+
+        records = notifier.get_records()
+        assert len(records) == 1
+        assert records[0]["type"] == "message"
+        assert "Grace period activated" in records[0]["content"]
+        assert not [r for r in records if r["type"] == "alert"]
+        assert ctx.state == MonitorState.GRACE_PERIOD
+
+    def test_grace_expiry_resumes_alerts_with_no_streamer(self, tmp_path):
+        notifier = FileNotifier(tmp_path / "out.jsonl")
+        ctx = make_ctx(notifier=notifier, sample_fn=Mock(return_value=None),
+                       streamers_enabled=False)
+        ctx.state = MonitorState.NO_STREAMER
+
+        with patch('monitor_stream.save_monitor_state'), \
+                patch('monitor_stream.check_grace_period_active', return_value=True):
+            for _ in range(4):
+                run_check(ctx)
+
+        with patch('monitor_stream.save_monitor_state'), \
+                patch('monitor_stream.check_grace_period_active', return_value=False):
+            run_check(ctx)
+            records = notifier.get_records()
+            assert len(records) == 2
+            assert "Grace period expired" in records[1]["content"]
+            assert ctx.state == MonitorState.NO_STREAMER
+
+            for _ in range(SILENCE_ALERT_LEVEL - 1):
+                run_check(ctx)
+
+        alerts = [r for r in notifier.get_records() if r["type"] == "alert"]
+        assert len(alerts) == 1
+        assert "No streamer connected" in alerts[0]["reason"]
+
+    def test_streamer_connecting_during_grace_is_recorded_on_expiry(self):
+        ctx = make_ctx()
+        ctx.state = MonitorState.GRACE_PERIOD
+        handle_state_transition(ctx, MonitorState.STREAMER_ACTIVE, "DJ", 5)
+        assert ctx.streamer_name == "DJ"
+        assert ctx.streamer_id == 5
+
+
+class TestGraceHandover:
+    """Streamer identity must follow the live poll while a grace period runs."""
+
+    def test_handover_during_grace_names_new_streamer(self, tmp_path):
+        notifier = FileNotifier(tmp_path / "out.jsonl")
+        azuracast = Mock()
+        ctx = make_ctx(notifier=notifier, azuracast=azuracast,
+                       sample_fn=Mock(return_value=None))
+        ctx.state = MonitorState.STREAMER_ACTIVE
+        ctx.streamer_name, ctx.streamer_id = "A", 11
+
+        def run(grace, poll):
+            azuracast.check_streamer_connected.return_value = poll
+            with patch('monitor_stream.save_monitor_state'), \
+                    patch('monitor_stream.check_grace_period_active', return_value=grace):
+                run_check(ctx)
+
+        run(True, (True, "A", 11))          # ACTIVE -> GRACE
+        assert ctx.state == MonitorState.GRACE_PERIOD
+        run(True, (False, None, None))      # A leaves
+        assert (ctx.streamer_name, ctx.streamer_id) == (None, None)
+        run(True, (True, "B", 22))          # B connects
+        assert (ctx.streamer_name, ctx.streamer_id) == ("B", 22)
+        run(False, (True, "B", 22))         # grace expires
+
+        assert ctx.state == MonitorState.STREAMER_ACTIVE
+        assert (ctx.streamer_name, ctx.streamer_id) == ("B", 22)
+        contents = [r.get("content", "") for r in notifier.get_records()]
+        assert any("Grace period activated for 'A'" in c for c in contents)
+        assert any("Grace period expired for 'B'" in c for c in contents)
+        assert not any("expired for 'A'" in c for c in contents)
+
+        for _ in range(STREAMER_WARNING_THRESHOLD):
+            run(False, (True, "B", 22))
+        alerts = [r for r in notifier.get_records() if r["type"] == "alert"]
+        assert alerts
+        assert all("'A'" not in r["reason"] and "11" not in r["reason"] for r in alerts)
+        assert any("`!shark 22`" in r["reason"] for r in alerts)
+
+    def test_expiry_always_takes_live_identity(self):
+        ctx = make_ctx()
+        ctx.state = MonitorState.GRACE_PERIOD
+        ctx.streamer_name, ctx.streamer_id = "A", 1
+        handle_state_transition(ctx, MonitorState.STREAMER_ACTIVE, "B", 2)
+        assert (ctx.streamer_name, ctx.streamer_id) == ("B", 2)
 
 
 if __name__ == '__main__':

@@ -62,3 +62,28 @@ def test_discord_notifier_sends_every_alert(mock_post):
     n.send_alert("second")
     n.send_alert("third")
     assert mock_post.call_count == 3
+
+
+def _posted_content(notifier, method, *args):
+    with patch("notifier.requests.post", return_value=Mock(status_code=204)) as post:
+        getattr(notifier, method)(*args)
+    return post.call_args.kwargs["json"]["content"]
+
+
+def test_message_prefixed_with_station_name():
+    n = DiscordNotifier("u", "1", station_name="pulse")
+    assert _posted_content(n, "send_message", "Greedy Shark is active") == \
+        "\U0001F988 **[pulse] Greedy Shark is active**"
+
+
+def test_alert_prefixed_with_station_name():
+    n = DiscordNotifier("u", "1", station_name="pulse")
+    content = _posted_content(n, "send_alert", "silent")
+    assert "**[pulse] Stream issue detected**" in content
+    assert content.startswith("<@&1>")
+
+
+def test_no_station_name_is_unchanged():
+    n = DiscordNotifier("u", "1")
+    assert _posted_content(n, "send_message", "Greedy Shark is active") == \
+        "\U0001F988 **Greedy Shark is active**"

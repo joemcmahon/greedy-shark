@@ -5,6 +5,11 @@ monitor-venv
 .monitor_state
 __pycache__/
 
+# Per-station config and runtime state (the *.example files stay tracked)
+stations/*.env
+stations.json
+state/
+
 # Local-only handoffs (public repo)
 docs/HANDOFF.md
 docs/archive/

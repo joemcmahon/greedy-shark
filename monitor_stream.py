@@ -16,6 +16,17 @@ from datetime import datetime
 
 from azuracast_client import AzuracastClient
 from notifier import DiscordNotifier, Notifier
+from station import state_paths
+
+def parse_bool_env(value, default=True):
+    """Parse a boolean env value: false only for false/0/no (any case, stripped).
+
+    None (variable unset) gives `default`; any other value is true.
+    """
+    if value is None:
+        return default
+    return value.strip().lower() not in ("false", "0", "no")
+
 
 # Config from environment
 load_dotenv()
@@ -30,14 +41,26 @@ AZURACAST_BASE_URL = os.getenv("AZURACAST_BASE_URL")
 AZURACAST_API_KEY = os.getenv("AZURACAST_API_KEY")
 AZURACAST_STATION_ID = os.getenv("AZURACAST_STATION_ID")
 
+# Per-station identity and state location
+STATE_DIR = os.getenv("STATE_DIR", ".")
+STATION_NAME = os.getenv("STATION_NAME", "")
+STREAMERS_ENABLED = parse_bool_env(os.getenv("STREAMERS_ENABLED"))
+
+_PATHS = state_paths(STATE_DIR)
+
 # Grace period configuration
-GRACE_PERIOD_FILE = ".grace_period_until"
+GRACE_PERIOD_FILE = _PATHS.grace
 
 # Auto-suspension tracking
-AUTO_SUSPENDED_FILE = ".auto_suspended_streamers"
+AUTO_SUSPENDED_FILE = _PATHS.suspended
 
 # Monitor state tracking (shared with bot)
-MONITOR_STATE_FILE = ".monitor_state"
+MONITOR_STATE_FILE = _PATHS.monitor_state
+
+
+def ensure_state_dir(state_dir=None):
+    """Create the state directory if it does not exist."""
+    os.makedirs(state_dir or STATE_DIR, exist_ok=True)
 
 # Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
@@ -46,7 +69,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(me
 class MonitorState(Enum):
     NO_STREAMER = "no_streamer"           # No streamer connected, 2-minute rule
     STREAMER_ACTIVE = "streamer_active"   # Streamer connected, escalating 2/4/6-minute alerts
-    GRACE_PERIOD = "grace_period"         # Future: streamer acknowledged issues
+    GRACE_PERIOD = "grace_period"         # Alerts paused by a grace period, with or without a streamer
 
 import atexit
 import signal
@@ -55,16 +78,17 @@ def kill_handler(*args):
     sys.exit(0)
 
 
-def check_grace_period_active():
+def check_grace_period_active(path=None):
     """
     Check if a grace period is currently active by reading the timestamp file.
     Returns True if grace period is active, False otherwise.
     """
+    path = path or GRACE_PERIOD_FILE
     try:
-        if not os.path.exists(GRACE_PERIOD_FILE):
+        if not os.path.exists(path):
             return False
 
-        with open(GRACE_PERIOD_FILE, 'r') as f:
+        with open(path, 'r') as f:
             content = f.read().strip()
 
         # Empty file means no grace period
@@ -78,7 +102,7 @@ def check_grace_period_active():
             return True
         else:
             # Grace period expired, clean up the file
-            os.remove(GRACE_PERIOD_FILE)
+            os.remove(path)
             return False
 
     except Exception as e:
@@ -86,30 +110,32 @@ def check_grace_period_active():
         return False
 
 
-def check_and_fix_suspended_file_path():
-    if os.path.exists(AUTO_SUSPENDED_FILE) and not os.path.isfile(AUTO_SUSPENDED_FILE):
+def check_and_fix_suspended_file_path(path=None):
+    path = path or AUTO_SUSPENDED_FILE
+    if os.path.exists(path) and not os.path.isfile(path):
         logging.warning(
             "'%s' is a directory, not a file — removing it so the bot can start cleanly",
-            AUTO_SUSPENDED_FILE,
+            path,
         )
-        shutil.rmtree(AUTO_SUSPENDED_FILE)
+        shutil.rmtree(path)
 
 
-def load_auto_suspended_streamers():
+def load_auto_suspended_streamers(path=None):
     """
     Load the list of auto-suspended streamers from file.
     Returns dict: {streamer_id: {name, suspended_at, reason}}
     """
-    if os.path.exists(AUTO_SUSPENDED_FILE) and not os.path.isfile(AUTO_SUSPENDED_FILE):
+    path = path or AUTO_SUSPENDED_FILE
+    if os.path.exists(path) and not os.path.isfile(path):
         raise RuntimeError(
-            f"'{AUTO_SUSPENDED_FILE}' exists but is a directory, not a file — "
+            f"'{path}' exists but is a directory, not a file — "
             "remove it and restart the bot"
         )
     try:
-        if not os.path.exists(AUTO_SUSPENDED_FILE):
+        if not os.path.exists(path):
             return {}
 
-        with open(AUTO_SUSPENDED_FILE, 'r') as f:
+        with open(path, 'r') as f:
             return json.load(f)
 
     except Exception as e:
@@ -117,48 +143,51 @@ def load_auto_suspended_streamers():
         return {}
 
 
-def save_auto_suspended_streamers(suspended_dict):
+def save_auto_suspended_streamers(suspended_dict, path=None):
     """
     Save the list of auto-suspended streamers to file.
     """
-    if os.path.exists(AUTO_SUSPENDED_FILE) and not os.path.isfile(AUTO_SUSPENDED_FILE):
+    path = path or AUTO_SUSPENDED_FILE
+    if os.path.exists(path) and not os.path.isfile(path):
         raise RuntimeError(
-            f"'{AUTO_SUSPENDED_FILE}' exists but is a directory, not a file — "
+            f"'{path}' exists but is a directory, not a file — "
             "remove it and restart the bot"
         )
     try:
-        with open(AUTO_SUSPENDED_FILE, 'w') as f:
+        with open(path, 'w') as f:
             json.dump(suspended_dict, f, indent=2)
 
     except Exception as e:
         logging.error(f"Error saving auto-suspended streamers: {e}")
 
 
-def add_auto_suspended_streamer(streamer_id, streamer_name, reason="staff action"):
+def add_auto_suspended_streamer(streamer_id, streamer_name, reason="staff action", path=None):
     """
     Add a streamer to the auto-suspension tracking list.
     """
-    suspended = load_auto_suspended_streamers()
+    path = path or AUTO_SUSPENDED_FILE
+    suspended = load_auto_suspended_streamers(path)
     suspended[str(streamer_id)] = {
         "name": streamer_name,
         "suspended_at": datetime.now().isoformat(),
         "reason": reason
     }
-    save_auto_suspended_streamers(suspended)
+    save_auto_suspended_streamers(suspended, path)
     logging.info(f"Added {streamer_name} (ID: {streamer_id}) to auto-suspended list")
 
 
-def remove_auto_suspended_streamer(streamer_id):
+def remove_auto_suspended_streamer(streamer_id, path=None):
     """
     Remove a streamer from the auto-suspension tracking list.
     Returns True if removed, False if not found.
     """
-    suspended = load_auto_suspended_streamers()
+    path = path or AUTO_SUSPENDED_FILE
+    suspended = load_auto_suspended_streamers(path)
     streamer_id_str = str(streamer_id)
 
     if streamer_id_str in suspended:
         del suspended[streamer_id_str]
-        save_auto_suspended_streamers(suspended)
+        save_auto_suspended_streamers(suspended, path)
         logging.info(f"Removed streamer ID {streamer_id} from auto-suspended list")
         return True
 
@@ -238,7 +267,8 @@ STREAMER_REPEAT_INTERVAL = 2  # repeat staff alert every 2 checks after suspend 
 class MonitorContext:
     """Holds the state machine context and injectable dependencies."""
     def __init__(self, notifier: Notifier, azuracast: AzuracastClient,
-                 sample_fn) -> None:
+                 sample_fn, streamers_enabled: bool = True) -> None:
+        self.streamers_enabled = streamers_enabled
         self.notifier = notifier
         self.azuracast = azuracast
         self.sample_fn = sample_fn
@@ -264,18 +294,22 @@ def determine_next_state(ctx, is_streamer_connected, grace_period_active):
     """
     current = ctx.state
 
-    # Grace period transitions
-    if grace_period_active and current == MonitorState.STREAMER_ACTIVE:
+    if current == MonitorState.STREAMER_ACTIVE and grace_period_active:
         return MonitorState.GRACE_PERIOD
 
-    if not grace_period_active and current == MonitorState.GRACE_PERIOD:
+    # Grace applies even with no streamer connected (silences alerts)
+    if current == MonitorState.NO_STREAMER and grace_period_active:
+        return MonitorState.GRACE_PERIOD
+
+    if current == MonitorState.GRACE_PERIOD:
+        if grace_period_active:
+            return None  # Stay put; do not drop to NO_STREAMER and flap
         return MonitorState.STREAMER_ACTIVE if is_streamer_connected else MonitorState.NO_STREAMER
 
-    # Streamer connection/disconnection transitions
-    if is_streamer_connected and current == MonitorState.NO_STREAMER:
-        return MonitorState.GRACE_PERIOD if grace_period_active else MonitorState.STREAMER_ACTIVE
+    if current == MonitorState.NO_STREAMER and is_streamer_connected:
+        return MonitorState.STREAMER_ACTIVE
 
-    if not is_streamer_connected and current in [MonitorState.STREAMER_ACTIVE, MonitorState.GRACE_PERIOD]:
+    if current == MonitorState.STREAMER_ACTIVE and not is_streamer_connected:
         return MonitorState.NO_STREAMER
 
     return None  # No transition
@@ -293,7 +327,14 @@ def handle_state_transition(ctx, new_state, streamer_name=None, streamer_id=None
     if new_state == MonitorState.GRACE_PERIOD and previous_state == MonitorState.STREAMER_ACTIVE:
         ctx.notifier.send_message(f"Grace period activated for '{ctx.streamer_name}'. Monitoring paused.")
 
+    elif new_state == MonitorState.GRACE_PERIOD and previous_state == MonitorState.NO_STREAMER and streamer_name is None:
+        ctx.notifier.send_message("Grace period activated. Monitoring paused.")
+
     elif new_state == MonitorState.STREAMER_ACTIVE and previous_state == MonitorState.GRACE_PERIOD:
+        # The arguments are this pass's live poll; whoever is connected now is
+        # the streamer, not whoever was connected when grace began.
+        ctx.streamer_id = streamer_id
+        ctx.streamer_name = streamer_name
         ctx.notifier.send_message(f"Grace period expired for '{ctx.streamer_name}'. Normal monitoring resumed.")
 
     elif new_state == MonitorState.STREAMER_ACTIVE and previous_state == MonitorState.NO_STREAMER:
@@ -307,6 +348,8 @@ def handle_state_transition(ctx, new_state, streamer_name=None, streamer_id=None
         logging.info(f"Streamer connected: {streamer_name} (ID: {streamer_id})")
 
     elif new_state == MonitorState.NO_STREAMER:
+        if previous_state == MonitorState.GRACE_PERIOD:
+            ctx.notifier.send_message("Grace period expired. Normal monitoring resumed.")
         logging.info(f"Streamer disconnected: {ctx.streamer_name}")
         ctx.clear_streamer_info()
 
@@ -361,8 +404,9 @@ def handle_silence_by_state(ctx):
         handle_grace_period_silence(ctx)
 
 
-def save_monitor_state(ctx):
+def save_monitor_state(ctx, path=None):
     """Save current monitor state to file for bot access."""
+    path = path or MONITOR_STATE_FILE
     try:
         state_data = {
             "state": ctx.state.value,
@@ -371,7 +415,7 @@ def save_monitor_state(ctx):
             "streamer_id": ctx.streamer_id,
             "timestamp": time.time()
         }
-        with open(MONITOR_STATE_FILE, 'w') as f:
+        with open(path, 'w') as f:
             json.dump(state_data, f)
     except Exception as e:
         logging.error(f"Error saving monitor state: {e}")
@@ -381,12 +425,21 @@ def run_check(ctx):
     """Run one monitoring pass: update state, sample audio, and alert on schedule."""
     logging.info(f"🔁 Checking stream... [State: {ctx.state.value}]")
 
-    is_streamer_connected, streamer_name, streamer_id = ctx.azuracast.check_streamer_connected()
+    if ctx.streamers_enabled:
+        is_streamer_connected, streamer_name, streamer_id = ctx.azuracast.check_streamer_connected()
+    else:
+        is_streamer_connected, streamer_name, streamer_id = False, None, None
     grace_period_active = check_grace_period_active()
 
     new_state = determine_next_state(ctx, is_streamer_connected, grace_period_active)
     if new_state:
         handle_state_transition(ctx, new_state, streamer_name, streamer_id)
+
+    if ctx.state == MonitorState.GRACE_PERIOD and ctx.streamers_enabled:
+        # Keep identity in step with the live poll during grace, so the state
+        # file and !shark-status show who is connected now (None if nobody).
+        ctx.streamer_id = streamer_id
+        ctx.streamer_name = streamer_name
 
     wav_bytes = ctx.sample_fn(STREAM_URL, SAMPLE_DURATION)
 
@@ -409,10 +462,21 @@ def run_check(ctx):
     save_monitor_state(ctx)
 
 
+def check_required_config(webhook_url) -> None:
+    """Exit if the Discord webhook is missing (DiscordNotifier swallows post errors,
+    so without this the monitor would run healthy but mute)."""
+    if not (webhook_url or "").strip():
+        logging.error("DISCORD_WEBHOOK_URL is not set; refusing to start.")
+        raise SystemExit(1)
+
+
 def monitor_loop():
-    notifier = DiscordNotifier(DISCORD_WEBHOOK_URL, STAFF_ROLE_ID)
+    check_required_config(DISCORD_WEBHOOK_URL)
+    ensure_state_dir()
+    notifier = DiscordNotifier(DISCORD_WEBHOOK_URL, STAFF_ROLE_ID, station_name=STATION_NAME)
     client = AzuracastClient(AZURACAST_BASE_URL, AZURACAST_API_KEY, AZURACAST_STATION_ID)
-    ctx = MonitorContext(notifier=notifier, azuracast=client, sample_fn=grab_audio_sample)
+    ctx = MonitorContext(notifier=notifier, azuracast=client, sample_fn=grab_audio_sample,
+                         streamers_enabled=STREAMERS_ENABLED)
 
     atexit.register(lambda: notifier.send_message("Monitor has exited"))
     signal.signal(signal.SIGINT, kill_handler)

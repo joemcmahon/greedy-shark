@@ -1,44 +1,75 @@
+# NOTE on env_file: a service-level key REPLACES the same key merged in from
+# an anchor (lists are not concatenated). So env_file is NOT in x-shark-common;
+# every service lists its own files. For monitors, later files win, so
+# stations/<name>.env overrides .env.
+# There is no container_name anywhere, so a second stack started with
+# `docker compose -p <project> up -d` cannot collide with production.
+#
+# Profiles: radiospiral and the bot have no profile, so a plain
+# `docker compose up -d` starts only those two. The other monitors are in the
+# `secondary` profile; start them with `--profile secondary` or
+# COMPOSE_PROFILES=secondary. (Profile behaviour not yet verified; to be
+# checked on the test server.)
+x-shark-common: &shark-common
+  build: .
+  restart: unless-stopped
+  network_mode: host
+
+x-monitor-healthcheck: &monitor-healthcheck
+  test: ["CMD", "python", "-c", "import os, time; p = os.path.join(os.getenv('STATE_DIR', '.'), '.monitor_state'); exit(0 if os.path.exists(p) and os.path.getmtime(p) > time.time() - 120 else 1)"]
+  interval: 2m
+  timeout: 10s
+  retries: 3
+  start_period: 30s
+
 services:
-  monitor:
-    build: .
-    container_name: greedy-shark-monitor
+  monitor-radiospiral:
+    <<: *shark-common
     command: python monitor_stream.py
+    env_file: [.env, stations/radiospiral.env]
     volumes:
-      - ./.grace_period_until:/app/.grace_period_until
-      - ./.auto_suspended_streamers:/app/.auto_suspended_streamers
-      - ./.monitor_state:/app/.monitor_state
-    env_file:
-      - .env
-    restart: unless-stopped
-    network_mode: host
-    healthcheck:
-      test: ["CMD", "python", "-c", "import os; exit(0 if os.path.exists('.monitor_state') and os.path.getmtime('.monitor_state') > __import__('time').time() - 120 else 1)"]
-      interval: 2m
-      timeout: 10s
-      retries: 3
-      start_period: 30s
+      - ./state/radiospiral:/state
+    healthcheck: *monitor-healthcheck
+
+  monitor-pulse:
+    <<: *shark-common
+    command: python monitor_stream.py
+    profiles: [secondary]
+    env_file: [.env, stations/pulse.env]
+    volumes:
+      - ./state/pulse:/state
+    healthcheck: *monitor-healthcheck
+
+  monitor-inner:
+    <<: *shark-common
+    command: python monitor_stream.py
+    profiles: [secondary]
+    env_file: [.env, stations/inner.env]
+    volumes:
+      - ./state/inner:/state
+    healthcheck: *monitor-healthcheck
+
+  monitor-outer:
+    <<: *shark-common
+    command: python monitor_stream.py
+    profiles: [secondary]
+    env_file: [.env, stations/outer.env]
+    volumes:
+      - ./state/outer:/state
+    healthcheck: *monitor-healthcheck
 
   bot:
-    build: .
-    container_name: greedy-shark-bot
+    <<: *shark-common
     command: python grace_period_bot.py
+    env_file: [.env]
     volumes:
-      - ./.grace_period_until:/app/.grace_period_until
-      - ./.auto_suspended_streamers:/app/.auto_suspended_streamers
-      - ./.monitor_state:/app/.monitor_state
-    env_file:
-      - .env
-    restart: unless-stopped
-    network_mode: host
+      - ./state:/state
+      - ./stations.json:/app/stations.json:ro
     depends_on:
-      - monitor
+      - monitor-radiospiral
     healthcheck:
       test: ["CMD", "pgrep", "-f", "grace_period_bot.py"]
       interval: 2m
       timeout: 10s
       retries: 3
       start_period: 30s
-
-networks:
-  greedy-shark-network:
-    driver: bridge
