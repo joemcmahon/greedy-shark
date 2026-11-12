@@ -22,6 +22,8 @@
 - Every webhook `execute`/`edit` carries an explicit timeout (default 10s); SSE read timeout default 300s, configurable.
 - Python 3.10; no new third-party dependencies (`sqlite3` is stdlib); CI runs `python -m unittest`.
 - Heartbeat is touched only on a received SSE event or a successful (re)connect, never from a timer.
+- A connection attempt fails if the SSE endpoint answers anything other than HTTP 200, or if the connection closes before delivering a single event. Both go through `ResilientRunner`'s retry count and backoff (never an immediate reconnect), and the first event delivered on a connection resets the backoff.
+- `.gitignore` covers `stations/*.env`, `state/` and `*.sqlite3` (real station env files hold webhook secrets); `*.example` files stay tracked.
 
 ## Review Focus
 
@@ -31,6 +33,9 @@
 4. One malformed or unparseable event must not abort the connection or cause a reconnect loop (Task 2).
 5. A Discord call that never answers must fail within the timeout (Task 6), and `DRY_RUN` must never construct a webhook (Task 6).
 6. The image must never contain `.env` (Task 3).
+7. A non-200 reply from the SSE endpoint, or a connection that closes without delivering an event, must back off and never spin (Task 4).
+8. A real `stations/<name>.env` must never be committable (Tasks 3 and 7).
+9. A restarter started after 05:00 must not restart every monitor on startup (Task 7).
 
 ## File Structure
 
@@ -93,17 +98,18 @@
 
 ### Task 3: No secrets in the image
 
-**Files:** Modify `Dockerfile`, `.env.example`; Create `.dockerignore`; Test `test_deploy_config.py`
+**Files:** Modify `Dockerfile`, `.env.example`, `.gitignore`; Create `.dockerignore`; Test `test_deploy_config.py`
 
 **Interfaces:**
-- Produces: a `Dockerfile` whose `COPY` lines never name `.env` (copy `*.py` only; `healthcheck.py` and `restarter.sh` are added by later tasks, `restarter.sh` is mounted, not copied); a `.dockerignore` listing `.env`, `.venv`, `.git`, `__pycache__`, `*.log`, `state/`, `stations/*.env`. `.env.example` documents every variable from Task 1 and states which are main-only (`NOW_PLAYING_WEBHOOK`) versus status-board-only (`STATUS_BOARD`, `STATUS_BOARD_WEBHOOK`, `STATION_*`).
+- Produces: a `Dockerfile` whose `COPY` lines never name `.env` (copy `*.py` only; `healthcheck.py` and `restarter.sh` are added by later tasks, `restarter.sh` is mounted, not copied); a `.dockerignore` listing `.env`, `.venv`, `.git`, `__pycache__`, `*.log`, `state/`, `stations/*.env`. `.env.example` documents every variable from Task 1 and states which are main-only (`NOW_PLAYING_WEBHOOK`) versus status-board-only (`STATUS_BOARD`, `STATUS_BOARD_WEBHOOK`, `STATION_*`). `.gitignore` gains `stations/*.env`, `state/` and `*.sqlite3`, while `stations/*.env.example` stays tracked.
 
 - [ ] **Step 1: Write failing tests** (`test_deploy_config.py`, plain file reads, no Docker):
   - `test_dockerfile_does_not_copy_env`: no `COPY`/`ADD` line contains `.env`.
   - `test_dockerignore_excludes_secrets_and_state`: `.dockerignore` exists and contains `.env`, `.venv`, `.git`, `state/`.
   - `test_env_example_documents_all_settings`: every env name from Task 1 appears in `.env.example`.
+  - `test_gitignore_covers_station_env_and_state`: `.gitignore` contains `stations/*.env`, `state/` and `*.sqlite3`, and has no line that would ignore `*.example` files.
 - [ ] **Step 2: Run** `python -m unittest test_deploy_config`. Expected: FAIL (today's `Dockerfile` has `COPY *.py .env .`).
-- [ ] **Step 3: Implement** the three files.
+- [ ] **Step 3: Implement** the four files.
 - [ ] **Step 4: Run** the full suite. Expected: pass.
 - [ ] **Step 5: Commit** `fix: stop baking .env into the image; document settings`
 
@@ -115,15 +121,15 @@
 
 **Interfaces:**
 - Produces:
-  - `with_urllib3(url, headers, timeout=30, read_timeout=300)` and `build_sse_client(server, shortcode, read_timeout=300)`: the read timeout reaches `urllib3.Timeout(read=...)`.
+  - `with_urllib3(url, headers, timeout=30, read_timeout=300)` and `build_sse_client(server, shortcode, read_timeout=300)`: the read timeout reaches `urllib3.Timeout(read=...)`. `with_urllib3` raises `SSEConnectionError` (a new `Exception` subclass in `azclient.py`; its message carries the status code and no URL) for any HTTP status other than 200.
   - `run(client, callback, shortcode, autodj_name=..., on_event=None)`: `on_event()` is called for every received event, first, before any parsing, including events with no recognised payload; an exception inside `on_event` is logged and ignored.
-  - `ResilientRunner(server, shortcode, callback, max_retries=None, autodj_name=DEFAULT_AUTODJ_NAME, read_timeout=300.0, on_event=None, on_connect=None)`: forwards `read_timeout` to `build_sse_client`, `autodj_name`/`on_event` to `run`, and calls `on_connect()` after each successful `build_sse_client`. Retry behaviour is untouched.
-  - `heartbeat.py`: `heartbeat_path(state_dir: str) -> str` (`<state_dir>/heartbeat`); `class Heartbeat` with `__init__(self, path)` and `touch(self) -> None` (creates parent dirs, updates mtime); `check_heartbeat(path: str, max_age: float, now: float | None = None) -> bool` (False if missing or older than `max_age`); `main(environ=os.environ) -> int` reading `STATE_DIR` (default `.`) and `HEARTBEAT_MAX_AGE` (default 600), returning 0 or 1. `healthcheck.py` is `sys.exit(main())` guarded by `__main__`.
+  - `ResilientRunner(server, shortcode, callback, max_retries=None, autodj_name=DEFAULT_AUTODJ_NAME, read_timeout=300.0, on_event=None, on_connect=None)`: forwards `read_timeout` to `build_sse_client`, `autodj_name`/`on_event` to `run`, and calls `on_connect()` after each successful (HTTP 200) `build_sse_client`. Backoff rules: the first event delivered on a connection resets the retry count and the backoff (wrap the caller's `on_event` to do this, then call it); a `run()` that returns without any event having been delivered on that connection is a failed attempt: the retry count and a `_calculate_backoff` sleep (shutdown-aware) apply, so it never reconnects immediately. Everything else about the retry behaviour is untouched.
+  - `heartbeat.py`: `heartbeat_path(state_dir: str) -> str` (`<state_dir>/heartbeat`); `class Heartbeat` with `__init__(self, path)` and `touch(self) -> None` (creates parent dirs, updates mtime); `check_heartbeat(path: str, max_age: float, now: float | None = None) -> bool` (False if missing or older than `max_age`); `main(environ=os.environ) -> int` reading `STATE_DIR` (default `.`) and `HEARTBEAT_MAX_AGE` (default 900: the read timeout 300 + the backoff cap 300 + margin), returning 0 or 1. `healthcheck.py` is `sys.exit(main())` guarded by `__main__`.
 
 - [ ] **Step 1: Write failing tests:**
-  - `test_heartbeat.py`: `touch` creates the file and creates missing directories; a second `touch` after `os.utime` into the past moves the mtime forward; `check_heartbeat` is False for a missing file, True when fresh, False when older than `max_age` (pass `now`); `main` returns 0/1 with `STATE_DIR` pointing at a tmp dir (missing, fresh, stale).
-  - `test_azclient.py`: `with_urllib3` builds its `PoolManager` with a `Timeout` whose `read_total` equals the argument (patch `urllib3.PoolManager`); `run` calls `on_event` once per event for a fake client yielding `{}`, non-JSON and a valid event; an `on_event` that raises does not stop `run`.
-  - `test_resilient_runner.py` (patch `resilient_runner.build_sse_client` and `azclient.run`): `on_connect` is called once per connection attempt that succeeds; `read_timeout` and `autodj_name`/`on_event` are forwarded; a `build_sse_client` that raises does not call `on_connect`.
+  - `test_heartbeat.py`: `touch` creates the file and creates missing directories; a second `touch` after `os.utime` into the past moves the mtime forward; `check_heartbeat` is False for a missing file, True when fresh, False when older than `max_age` (pass `now`); `main` returns 0/1 with `STATE_DIR` pointing at a tmp dir (missing, fresh, stale), and the default max age is 900.
+  - `test_azclient.py`: `with_urllib3` raises `SSEConnectionError` for a 503 and a 404 response and returns for a 200 (patch `urllib3.PoolManager` to return a response object with `.status`); `with_urllib3` builds its `PoolManager` with a `Timeout` whose `read_total` equals the argument; `run` calls `on_event` once per event for a fake client yielding `{}`, non-JSON and a valid event; an `on_event` that raises does not stop `run`.
+  - `test_resilient_runner.py` (patch `resilient_runner.build_sse_client` and `azclient.run`): `on_connect` is called once per connection attempt that succeeds; `read_timeout` and `autodj_name`/`on_event` are forwarded; a `build_sse_client` that raises (including `SSEConnectionError`) does not call `on_connect`. Using a fake clock (patch `resilient_runner.time` so `sleep` advances `time()` and nothing really waits): `test_event_resets_backoff` (after a connection delivers an event and then fails, the next delay is the initial backoff); `test_backoff_doubles_without_events` (consecutive failures with no events double the delay up to the cap); `test_event_less_close_backs_off_instead_of_spinning` (`run` returns at once with no event, the shutdown check stops the loop after a few passes, and the sleeps seen are positive and non-decreasing, never zero).
 - [ ] **Step 2: Run** the three test files. Expected: FAIL.
 - [ ] **Step 3: Implement** to the interfaces.
 - [ ] **Step 4: Run** the full suite. Expected: pass.
@@ -141,14 +147,14 @@
   - `class StatusBoardStore`: `__init__(self, path: str)` (creates the SQLite file, parent dirs and table `status(station TEXT PRIMARY KEY, message_id TEXT, last_value TEXT, updated_at REAL)`); `get(station: str) -> StoredStatus | None` (`StoredStatus` is a `NamedTuple(message_id: str, last_value: str, updated_at: float)`); `save(station: str, message_id: str, last_value: str) -> None`.
   - `format_status(response: NowPlayingResponse, station_name: str) -> dict` with keys `title` (starts with `station_name`), `description`, `timestamp`, `thumbnail_url`.
   - `class StatusBoardSender`: `__init__(self, webhook_url, station_name, store, timeout=10.0, webhook_factory=DiscordWebhook)`; `send(self, response: NowPlayingResponse) -> None`:
-    1. If the stored `last_value` equals this response's value, do nothing.
+    1. If the stored `last_value` equals this response's value, do nothing. The value is `f"{dj}|{artist}|{track}|{album}"`, the same four fields `NowPlayingResponse.__eq__` compares, so a change in elapsed time alone never triggers an edit.
     2. If there is no stored message ID, post a new message and save the returned ID with the value (a failed post saves nothing, so the next event retries).
     3. Otherwise edit the stored message; success updates `last_value`. A 404 on edit means the message is gone, so post a new one and save the new ID. Any other status, and any exception, is logged (no URL in the log), changes nothing in the store, and never propagates.
 
 - [ ] **Step 1: Write failing tests** (a `FakeWebhook` class recording `url`, `id`, `timeout`, embeds and calls, with scripted `execute()`/`edit()` results that set `.id` like the library; the store lives in a `tempfile.TemporaryDirectory`):
   - `test_first_send_posts_and_saves_id`.
   - `test_second_send_edits_same_message`: a new track edits using the stored `id`, no second post.
-  - `test_same_track_is_not_resent`.
+  - `test_same_track_is_not_resent`, and `test_elapsed_only_change_is_not_resent`.
   - `test_recreate_keeps_editing_same_message`: build a new `StatusBoardStore` and `StatusBoardSender` on the same file (simulating a container recreate); the next track edits the original message ID and does not post.
   - `test_deleted_message_reposts`: edit returns 404 → one new post, the new ID is saved and the next edit uses it.
   - `test_failures_keep_id_and_do_not_raise`: edit returns 500, then raises `requests.exceptions.Timeout`; both leave the stored ID unchanged and `send` does not raise; a later successful send edits normally.
@@ -197,16 +203,18 @@
 **Interfaces:**
 - Consumes: env names from Task 1; `healthcheck.py` (Task 4).
 - Produces:
-  - `restarter.sh` (POSIX `sh`, runs in `docker:cli`), loops forever with a 60s sleep. Each pass: (a) restarts every container matching `docker ps -q --filter label=az-monitor.managed=true --filter health=unhealthy`; (b) once per calendar day, when the current time is at or after `RESTART_AT` (default `05:00`) and the day has not been done, restarts every container matching `--filter label=az-monitor.managed=true` and records the day in `RESTARTER_STATE` (default `/tmp/restarter.last`). Test hooks: `DOCKER` (command to call, default `docker`), `RUN_ONCE=1` (one pass, no sleep), `NOW_HM` and `NOW_DAY` (override the clock).
+  - `restarter.sh` (POSIX `sh`, runs in `docker:cli`), loops forever with a 60s sleep. Each pass: (a) restarts every container matching `docker ps -q --filter label=az-monitor.managed=true --filter health=unhealthy`; (b) once per calendar day, when the current time is at or after `RESTART_AT` (default `05:00`) and the day has not been done, restarts every container matching `--filter label=az-monitor.managed=true` and records the day in `RESTARTER_STATE` (default `/tmp/restarter.last`). On its first pass after startup, if the time is already at or after `RESTART_AT` and no marker exists, it records today as done **without** restarting anything (so recreating the restarter during the day does not restart every monitor). Test hooks: `DOCKER` (command to call, default `docker`), `RUN_ONCE=1` (one pass, no sleep), `NOW_HM` and `NOW_DAY` (override the clock).
   - `docker-compose.yml`: service `az-now-playing` (main, post mode; `container_name: az-now-playing` kept for continuity; `build: .` and `image: az-now-playing:latest`; `env_file: [.env]`; `environment: STATE_DIR=/state`; volume `./state/radiospiral:/state`; label `az-monitor.managed: "true"`; healthcheck `["CMD", "python", "healthcheck.py"]` with interval 60s, timeout 10s, retries 3, start_period 60s; `restart: unless-stopped`). Services `status-pulse`, `status-inner`, `status-outer` from a shared `x-` block under `profiles: [secondary]`, each with `env_file: [stations/<name>.env]` **only** (not the main `.env`), `STATE_DIR=/state`, volume `./state/<name>:/state`, the same label and healthcheck, and no `container_name`. A `restarter` service (`docker:cli`, docker socket mounted, `restarter.sh` mounted read-only, `entrypoint: ["/bin/sh", "/restarter.sh"]`, `restart: unless-stopped`). A comment explains why `env_file` is per service.
   - `stations/<name>.env.example`: `STATUS_BOARD=true`, `STATION_SERVER`, `STATION_SHORTCODE`, `STATION_NAME`, `AUTODJ_NAME`, `STATUS_BOARD_WEBHOOK` placeholder, `STATE_DIR=/state`. Comment that the shortcodes, the AutoDJ persona names and the test-server host must be confirmed on the test server.
   - `.github/workflows/test.yml`: the import check lists the new modules; the test step is `python -m unittest discover -v`.
+  - `.gitignore` entries and the `HEARTBEAT_MAX_AGE` formula are covered by Task 3 and Task 4; the README documents both.
   - README: settings table, a "Multiple stations" section (status board, per-station env files, state directories, `--profile secondary`, a separate test stack with its own webhooks), and the migration for the existing prod container: its webhook currently comes only from the `.env` that was baked into the old image, so `.env` must stay on the host next to `docker-compose.yml` and be loaded through `env_file` **before** the first rebuild; also stop the old `restarter` container (it targets `az-now-playing` only), then `docker compose up -d --build`.
 
 - [ ] **Step 1: Write failing tests** (`test_restarter.py`, using `subprocess` to run `sh restarter.sh` with a fake `DOCKER` script in a temp dir that logs its arguments and prints scripted container IDs for `ps`):
   - `test_unhealthy_sweep_restarts_labelled_unhealthy_containers`: `NOW_HM=12:00`; the fake `ps` (called with `health=unhealthy`) prints two IDs; the log shows `restart` called with both and no daily restart.
   - `test_daily_restart_once_per_day`: `NOW_HM=05:00`, `NOW_DAY=2026-11-12`, fake `ps` (labelled only) prints three IDs; the first pass restarts all three and writes the state file; a second pass the same day restarts nothing for the daily rule; a pass with `NOW_DAY=2026-11-13` restarts again.
   - `test_before_restart_time_does_nothing_daily`: `NOW_HM=04:59`.
+  - `test_startup_after_restart_time_does_not_restart`: no state file, `NOW_HM=14:00`, `NOW_DAY=2026-11-12`: the first pass restarts nothing for the daily rule but records the day; a pass with `NOW_DAY=2026-11-13` and `NOW_HM=05:00` restarts.
   - `test_ps_uses_the_managed_label`: the recorded `ps` arguments contain `label=az-monitor.managed=true`.
 - [ ] **Step 2: Run** `python -m unittest test_restarter`. Expected: FAIL (no script).
 - [ ] **Step 3: Implement** all files above. Make the clock logic compare `HH:MM` strings (zero-padded) so "at or after" works.
@@ -224,7 +232,8 @@
 - Station settings, AutoDJ name, status-board mode and its own webhook with no fallback: Tasks 1 and 6.
 - No `.env` in the image, `env_file` per service, migration giving the main container its env: Tasks 3 and 7.
 - Timeouts on every webhook call, configurable SSE read timeout, `ResilientRunner` kept as the only retry layer: Tasks 4 and 6.
-- Heartbeat only on events and connects, healthcheck with window above the read timeout: Task 4 (default max age 600 vs read timeout 300; a quiet healthy connection reconnects at the read timeout, which also touches the heartbeat).
+- Heartbeat only on events and connects, healthcheck with window above the read timeout and the backoff cap: Task 4 (default max age 900 = read timeout 300 + backoff cap 300 + margin; the first event resets the backoff; a non-200 or event-less close backs off instead of spinning).
+- Known residual: a server that answers 200 and then closes immediately every time would touch the heartbeat once per backoff interval and so still look healthy. Accepted: the backoff stops it hammering the server, and the status board's staleness would show.
 - Parse fix with regression test and per-event guard: Task 2.
 - Status state in a per-station SQLite file in a mounted volume, edit in place, repost on 404: Tasks 5 and 7.
 - One generalised restarter (daily restart plus unhealthy sweep, selected by label): Task 7.
