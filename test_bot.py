@@ -2,7 +2,7 @@ import json
 import os
 import time
 import pytest
-from unittest.mock import Mock
+from unittest.mock import Mock, AsyncMock
 from grace_period_bot import (
     handle_shark,
     handle_unshark,
@@ -15,7 +15,10 @@ from grace_period_bot import (
     handle_cancel_grace,
     handle_grace_status,
     GRACE_PERIOD_MINUTES,
+    with_station,
+    tagged,
 )
+from station import Station
 
 
 # ---------------------------------------------------------------------------
@@ -429,3 +432,91 @@ class TestHandleSharkStatus:
         )
         assert "TestDJ" in msgs[0]
         assert "1 user suspended" in msgs[0]
+
+
+# ---------------------------------------------------------------------------
+# Multi-station: with_station, tagging, per-station files
+# ---------------------------------------------------------------------------
+
+def two_stations(tmp_path):
+    a = Station("pulse", str(tmp_path / "pulse"), "1")
+    b = Station("inner", str(tmp_path / "inner"), "2")
+    for st in (a, b):
+        os.makedirs(st.state_dir)
+    return a, b
+
+
+class TestWithStation:
+    async def test_with_station_refuses_none_and_lists_names(self, tmp_path):
+        stations = [Station("radiospiral", str(tmp_path), "1"),
+                    Station("pulse", str(tmp_path), "2")]
+        send_fn, msgs = await capture()
+        action = AsyncMock()
+        await with_station(None, send_fn, stations, action)
+        assert len(msgs) == 1
+        assert "radiospiral, pulse" in msgs[0]
+        assert "!woi pulse" in msgs[0]
+        action.assert_not_awaited()
+
+    async def test_with_station_refuses_unknown_naming_it(self, tmp_path):
+        stations = [Station("radiospiral", str(tmp_path), "1"),
+                    Station("pulse", str(tmp_path), "2")]
+        send_fn, msgs = await capture()
+        action = AsyncMock()
+        await with_station("pulze", send_fn, stations, action)
+        assert len(msgs) == 1
+        assert "pulze" in msgs[0]
+        assert "radiospiral, pulse" in msgs[0]
+        action.assert_not_awaited()
+
+    async def test_with_station_is_case_insensitive(self, tmp_path):
+        pulse = Station("pulse", str(tmp_path), "2")
+        stations = [Station("radiospiral", str(tmp_path), "1"), pulse]
+        send_fn, msgs = await capture()
+        action = AsyncMock()
+        await with_station("PULSE", send_fn, stations, action)
+        action.assert_awaited_once_with(pulse)
+        assert msgs == []
+
+
+class TestPerStationGrace:
+    async def test_woi_on_one_station_leaves_others_alone(self, tmp_path):
+        a, b = two_stations(tmp_path)
+        send_fn, msgs = await capture()
+        await handle_working_on_it(send_fn, grace_file=a.paths.grace,
+                                   station_name="pulse")
+        assert os.path.exists(a.paths.grace)
+        assert not os.path.exists(b.paths.grace)
+
+        send_fn, msgs = await capture()
+        await handle_grace_status(send_fn, grace_file=b.paths.grace,
+                                  station_name="inner")
+        assert "No active grace period" in msgs[0]
+
+        send_fn, msgs = await capture()
+        await handle_cancel_grace(send_fn, grace_file=b.paths.grace,
+                                  station_name="inner")
+        assert "No active grace period to cancel" in msgs[0]
+        assert os.path.exists(a.paths.grace)
+
+    async def test_handlers_tag_messages_with_station_name(self, tmp_path):
+        grace = str(tmp_path / "grace")
+        send_fn, msgs = await capture()
+        await handle_working_on_it(send_fn, grace_file=grace, station_name="pulse")
+        assert msgs[0].startswith("[pulse] ")
+        send_fn, msgs = await capture()
+        await handle_grace_status(send_fn, grace_file=grace, station_name="pulse")
+        assert msgs[0].startswith("[pulse] ")
+        send_fn, msgs = await capture()
+        await handle_cancel_grace(send_fn, grace_file=grace, station_name="pulse")
+        assert msgs[0].startswith("[pulse] ")
+        send_fn, msgs = await capture()
+        await handle_shark_status(send_fn, mock_client(),
+                                  load_fn=lambda: {},
+                                  state_file=str(tmp_path / "nostate"),
+                                  grace_file=grace, station_name="pulse")
+        assert msgs[0].startswith("[pulse] ")
+
+    async def test_untagged_by_default(self):
+        assert tagged("hi") == "hi"
+        assert tagged("hi", "pulse") == "[pulse] hi"

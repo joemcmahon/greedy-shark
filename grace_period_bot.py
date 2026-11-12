@@ -17,6 +17,13 @@ from monitor_stream import (
     check_and_fix_suspended_file_path,
     MONITOR_STATE_FILE,
 )
+from station import (
+    Station,
+    StationConfigError,
+    find_station,
+    load_stations,
+    station_names,
+)
 
 # Load configuration
 load_dotenv()
@@ -28,6 +35,8 @@ AUTO_SUSPENDED_FILE = ".auto_suspended_streamers"
 AZURACAST_BASE_URL = os.getenv("AZURACAST_BASE_URL")
 AZURACAST_API_KEY = os.getenv("AZURACAST_API_KEY")
 AZURACAST_STATION_ID = os.getenv("AZURACAST_STATION_ID")
+STATIONS_FILE = os.getenv("STATIONS_FILE", "stations.json")
+STATIONS: "list[Station]" = []  # set at startup (see __main__)
 
 real_client = AzuracastClient(
     base_url=AZURACAST_BASE_URL or "",
@@ -39,6 +48,30 @@ real_client = AzuracastClient(
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
+
+def tagged(message, station_name=""):
+    """Prefix a message with the station name, if one is given."""
+    return f"[{station_name}] {message}" if station_name else message
+
+
+async def with_station(name, send_fn, stations, action):
+    """Run `await action(station)` for the named station.
+
+    Never guesses: if the name is missing or unknown, sends one refusal
+    listing the valid names and does not call `action`.
+    """
+    st = find_station(name, stations)
+    if st is None:
+        names = station_names(stations)
+        example = stations[-1].name if stations else "<station>"
+        if name:
+            problem = f"❌ Unknown station `{name}`."
+        else:
+            problem = "❌ Which station? Please name one."
+        await send_fn(f"{problem} Stations: {names}. Example: `!woi {example}`")
+        return
+    await action(st)
+
 
 async def handle_shark_help(send_fn, grace_minutes=GRACE_PERIOD_MINUTES):
     help_text = """
@@ -87,38 +120,48 @@ async def handle_shark_help(send_fn, grace_minutes=GRACE_PERIOD_MINUTES):
 
 
 async def handle_working_on_it(send_fn, grace_file=GRACE_PERIOD_FILE,
-                               grace_minutes=GRACE_PERIOD_MINUTES):
+                               grace_minutes=GRACE_PERIOD_MINUTES,
+                               station_name=""):
+    async def say(m):
+        await send_fn(tagged(m, station_name))
+
     try:
         expiration = datetime.now() + timedelta(minutes=grace_minutes)
         with open(grace_file, 'w') as f:
             f.write(str(expiration.timestamp()))
-        await send_fn(
+        await say(
             f"✅ Grace period activated! Monitoring suspended for {grace_minutes} minutes. "
             f"Auto-suspension disabled until {expiration.strftime('%H:%M:%S')}.")
     except Exception as e:
-        await send_fn(f"❌ Failed to activate grace period: {str(e)}")
+        await say(f"❌ Failed to activate grace period: {str(e)}")
 
 
-async def handle_cancel_grace(send_fn, grace_file=GRACE_PERIOD_FILE):
+async def handle_cancel_grace(send_fn, grace_file=GRACE_PERIOD_FILE, station_name=""):
+    async def say(m):
+        await send_fn(tagged(m, station_name))
+
     try:
         if os.path.exists(grace_file):
             os.remove(grace_file)
-            await send_fn("✅ Grace period cancelled. Normal monitoring resumed.")
+            await say("✅ Grace period cancelled. Normal monitoring resumed.")
         else:
-            await send_fn("ℹ️ No active grace period to cancel.")
+            await say("ℹ️ No active grace period to cancel.")
     except Exception as e:
-        await send_fn(f"❌ Failed to cancel grace period: {str(e)}")
+        await say(f"❌ Failed to cancel grace period: {str(e)}")
 
 
-async def handle_grace_status(send_fn, grace_file=GRACE_PERIOD_FILE):
+async def handle_grace_status(send_fn, grace_file=GRACE_PERIOD_FILE, station_name=""):
+    async def say(m):
+        await send_fn(tagged(m, station_name))
+
     try:
         if not os.path.exists(grace_file):
-            await send_fn("ℹ️ No active grace period. Normal monitoring active.")
+            await say("ℹ️ No active grace period. Normal monitoring active.")
             return
         with open(grace_file, 'r') as f:
             content = f.read().strip()
         if not content:
-            await send_fn("ℹ️ No active grace period. Normal monitoring active.")
+            await say("ℹ️ No active grace period. Normal monitoring active.")
             return
         expiration = datetime.fromtimestamp(float(content))
         now = datetime.now()
@@ -126,13 +169,13 @@ async def handle_grace_status(send_fn, grace_file=GRACE_PERIOD_FILE):
             remaining = expiration - now
             minutes = int(remaining.total_seconds() / 60)
             seconds = int(remaining.total_seconds() % 60)
-            await send_fn(
+            await say(
                 f"⏳ Grace period active. Expires in {minutes}m {seconds}s "
                 f"at {expiration.strftime('%H:%M:%S')}.")
         else:
-            await send_fn("ℹ️ Grace period has expired. Normal monitoring active.")
+            await say("ℹ️ Grace period has expired. Normal monitoring active.")
     except Exception as e:
-        await send_fn(f"❌ Failed to check grace period status: {str(e)}")
+        await say(f"❌ Failed to check grace period status: {str(e)}")
 
 
 async def handle_sharked(send_fn, load_fn=load_auto_suspended_streamers):
@@ -280,7 +323,11 @@ async def handle_unshark(streamer_id, send_fn, client,
 async def handle_shark_status(send_fn, client,
                               load_fn=load_auto_suspended_streamers,
                               state_file=MONITOR_STATE_FILE,
-                              grace_file=GRACE_PERIOD_FILE):
+                              grace_file=GRACE_PERIOD_FILE,
+                              station_name=""):
+    async def say(m):
+        await send_fn(tagged(m, station_name))
+
     try:
         suspended = load_fn()
         if not suspended:
@@ -341,9 +388,9 @@ async def handle_shark_status(send_fn, client,
         message = "🦈 **Greedy Shark Status**\n\n"
         message += f"**Suspended:** {suspended_msg}\n"
         message += f"**Status:** {status_msg}"
-        await send_fn(message)
+        await say(message)
     except Exception as e:
-        await send_fn(f"❌ Error: {str(e)}")
+        await say(f"❌ Error: {str(e)}")
 
 
 @bot.event
@@ -389,22 +436,34 @@ async def shark_help(ctx):
     await handle_shark_help(ctx.send)
 
 @bot.command(name='working-on-it', aliases=['workingonit', 'woi'])
-async def working_on_it(ctx):
+async def working_on_it(ctx, station: str = None):
     if ctx.channel.id != DISCORD_CHANNEL_ID:
         return
-    await handle_working_on_it(ctx.send)
+
+    async def action(st):
+        await handle_working_on_it(ctx.send, grace_file=st.paths.grace,
+                                   station_name=st.name)
+    await with_station(station, ctx.send, STATIONS, action)
 
 @bot.command(name='cancel-grace', aliases=['cancelgrace', 'cg'])
-async def cancel_grace(ctx):
+async def cancel_grace(ctx, station: str = None):
     if ctx.channel.id != DISCORD_CHANNEL_ID:
         return
-    await handle_cancel_grace(ctx.send)
+
+    async def action(st):
+        await handle_cancel_grace(ctx.send, grace_file=st.paths.grace,
+                                  station_name=st.name)
+    await with_station(station, ctx.send, STATIONS, action)
 
 @bot.command(name='grace-status', aliases=['gracestatus', 'gs'])
-async def grace_status(ctx):
+async def grace_status(ctx, station: str = None):
     if ctx.channel.id != DISCORD_CHANNEL_ID:
         return
-    await handle_grace_status(ctx.send)
+
+    async def action(st):
+        await handle_grace_status(ctx.send, grace_file=st.paths.grace,
+                                  station_name=st.name)
+    await with_station(station, ctx.send, STATIONS, action)
 
 @bot.command(name='unshark')
 async def unshark(ctx, streamer_id: str = None):
@@ -413,10 +472,20 @@ async def unshark(ctx, streamer_id: str = None):
     await handle_unshark(streamer_id, ctx.send, real_client)
 
 @bot.command(name='shark-status', aliases=['sharkstatus', 'status'])
-async def shark_status(ctx):
+async def shark_status(ctx, station: str = None):
     if ctx.channel.id != DISCORD_CHANNEL_ID:
         return
-    await handle_shark_status(ctx.send, real_client)
+
+    async def action(st):
+        client = AzuracastClient(AZURACAST_BASE_URL or "", AZURACAST_API_KEY or "",
+                                 st.azuracast_station_id)
+        await handle_shark_status(
+            ctx.send, client,
+            load_fn=lambda: load_auto_suspended_streamers(st.paths.suspended),
+            state_file=st.paths.monitor_state,
+            grace_file=st.paths.grace,
+            station_name=st.name)
+    await with_station(station, ctx.send, STATIONS, action)
 
 @bot.command(name='sharked')
 async def sharked(ctx):
@@ -453,6 +522,12 @@ if __name__ == "__main__":
         print("ERROR: DISCORD_CHANNEL_ID not configured in .env file")
         exit(1)
 
-    check_and_fix_suspended_file_path()
+    try:
+        STATIONS = load_stations(STATIONS_FILE)
+    except StationConfigError as e:
+        print(f"ERROR: {e}")
+        exit(1)
+    for st in STATIONS:
+        check_and_fix_suspended_file_path(st.paths.suspended)
     print("Starting Grace Period Bot...")
     bot.run(DISCORD_BOT_TOKEN)
