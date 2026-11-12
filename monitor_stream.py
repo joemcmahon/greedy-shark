@@ -284,18 +284,22 @@ def determine_next_state(ctx, is_streamer_connected, grace_period_active):
     """
     current = ctx.state
 
-    # Grace period transitions
-    if grace_period_active and current == MonitorState.STREAMER_ACTIVE:
+    if current == MonitorState.STREAMER_ACTIVE and grace_period_active:
         return MonitorState.GRACE_PERIOD
 
-    if not grace_period_active and current == MonitorState.GRACE_PERIOD:
+    # Grace applies even with no streamer connected (silences alerts)
+    if current == MonitorState.NO_STREAMER and grace_period_active:
+        return MonitorState.GRACE_PERIOD
+
+    if current == MonitorState.GRACE_PERIOD:
+        if grace_period_active:
+            return None  # Stay put; do not drop to NO_STREAMER and flap
         return MonitorState.STREAMER_ACTIVE if is_streamer_connected else MonitorState.NO_STREAMER
 
-    # Streamer connection/disconnection transitions
-    if is_streamer_connected and current == MonitorState.NO_STREAMER:
-        return MonitorState.GRACE_PERIOD if grace_period_active else MonitorState.STREAMER_ACTIVE
+    if current == MonitorState.NO_STREAMER and is_streamer_connected:
+        return MonitorState.STREAMER_ACTIVE
 
-    if not is_streamer_connected and current in [MonitorState.STREAMER_ACTIVE, MonitorState.GRACE_PERIOD]:
+    if current == MonitorState.STREAMER_ACTIVE and not is_streamer_connected:
         return MonitorState.NO_STREAMER
 
     return None  # No transition
@@ -313,7 +317,14 @@ def handle_state_transition(ctx, new_state, streamer_name=None, streamer_id=None
     if new_state == MonitorState.GRACE_PERIOD and previous_state == MonitorState.STREAMER_ACTIVE:
         ctx.notifier.send_message(f"Grace period activated for '{ctx.streamer_name}'. Monitoring paused.")
 
+    elif new_state == MonitorState.GRACE_PERIOD and previous_state == MonitorState.NO_STREAMER and streamer_name is None:
+        ctx.notifier.send_message("Grace period activated. Monitoring paused.")
+
     elif new_state == MonitorState.STREAMER_ACTIVE and previous_state == MonitorState.GRACE_PERIOD:
+        if ctx.streamer_name is None:
+            # A streamer connected during grace
+            ctx.streamer_id = streamer_id
+            ctx.streamer_name = streamer_name
         ctx.notifier.send_message(f"Grace period expired for '{ctx.streamer_name}'. Normal monitoring resumed.")
 
     elif new_state == MonitorState.STREAMER_ACTIVE and previous_state == MonitorState.NO_STREAMER:
@@ -327,6 +338,8 @@ def handle_state_transition(ctx, new_state, streamer_name=None, streamer_id=None
         logging.info(f"Streamer connected: {streamer_name} (ID: {streamer_id})")
 
     elif new_state == MonitorState.NO_STREAMER:
+        if previous_state == MonitorState.GRACE_PERIOD:
+            ctx.notifier.send_message("Grace period expired. Normal monitoring resumed.")
         logging.info(f"Streamer disconnected: {ctx.streamer_name}")
         ctx.clear_streamer_info()
 

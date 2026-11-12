@@ -729,5 +729,70 @@ def test_default_state_paths_are_todays_files():
     assert os.path.basename(sp.monitor_state) == ".monitor_state"
 
 
+class TestGraceWithNoStreamer:
+    """Grace periods must silence alerts even when no streamer is connected."""
+
+    def test_no_streamer_with_grace_goes_to_grace_period(self):
+        ctx = make_ctx()
+        ctx.state = MonitorState.NO_STREAMER
+        assert determine_next_state(ctx, False, True) == MonitorState.GRACE_PERIOD
+
+    def test_grace_period_stays_when_streamer_absent_and_grace_active(self):
+        ctx = make_ctx()
+        ctx.state = MonitorState.GRACE_PERIOD
+        assert determine_next_state(ctx, False, True) is None
+
+    @patch('monitor_stream.save_monitor_state')
+    @patch('monitor_stream.check_grace_period_active', return_value=True)
+    def test_grace_silences_alerts_with_no_streamer(self, _grace, _save, tmp_path):
+        notifier = FileNotifier(tmp_path / "out.jsonl")
+        ctx = make_ctx(notifier=notifier, sample_fn=Mock(return_value=None),
+                       streamers_enabled=False)
+        ctx.state = MonitorState.NO_STREAMER
+
+        for _ in range(4):
+            run_check(ctx)
+
+        records = notifier.get_records()
+        assert len(records) == 1
+        assert records[0]["type"] == "message"
+        assert "Grace period activated" in records[0]["content"]
+        assert not [r for r in records if r["type"] == "alert"]
+        assert ctx.state == MonitorState.GRACE_PERIOD
+
+    def test_grace_expiry_resumes_alerts_with_no_streamer(self, tmp_path):
+        notifier = FileNotifier(tmp_path / "out.jsonl")
+        ctx = make_ctx(notifier=notifier, sample_fn=Mock(return_value=None),
+                       streamers_enabled=False)
+        ctx.state = MonitorState.NO_STREAMER
+
+        with patch('monitor_stream.save_monitor_state'), \
+                patch('monitor_stream.check_grace_period_active', return_value=True):
+            for _ in range(4):
+                run_check(ctx)
+
+        with patch('monitor_stream.save_monitor_state'), \
+                patch('monitor_stream.check_grace_period_active', return_value=False):
+            run_check(ctx)
+            records = notifier.get_records()
+            assert len(records) == 2
+            assert "Grace period expired" in records[1]["content"]
+            assert ctx.state == MonitorState.NO_STREAMER
+
+            for _ in range(SILENCE_ALERT_LEVEL - 1):
+                run_check(ctx)
+
+        alerts = [r for r in notifier.get_records() if r["type"] == "alert"]
+        assert len(alerts) == 1
+        assert "No streamer connected" in alerts[0]["reason"]
+
+    def test_streamer_connecting_during_grace_is_recorded_on_expiry(self):
+        ctx = make_ctx()
+        ctx.state = MonitorState.GRACE_PERIOD
+        handle_state_transition(ctx, MonitorState.STREAMER_ACTIVE, "DJ", 5)
+        assert ctx.streamer_name == "DJ"
+        assert ctx.streamer_id == 5
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
