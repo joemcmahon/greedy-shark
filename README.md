@@ -96,14 +96,14 @@ GRACE_PERIOD_MINUTES=15
 
 | Variable | Required? | Default | Used by | Meaning |
 |---|---|---|---|---|
-| `STREAM_URL` | yes | — | monitor | The public audio stream to sample (anything ffmpeg can open, usually an Icecast/Shoutcast `.mp3` or `.aac` URL). |
+| `STREAM_URL` | yes | — | monitor | (Docker: goes in `stations/<name>.env`, not `.env`.) The public audio stream to sample (anything ffmpeg can open, usually an Icecast/Shoutcast `.mp3` or `.aac` URL). |
 | `DISCORD_WEBHOOK_URL` | yes | — | monitor | Webhook that alerts and status messages are posted to. |
 | `STAFF_ROLE_ID` | yes | — | monitor | Numeric ID of the role to `@`-mention on alerts. |
 | `CHECK_INTERVAL` | no | `60` | monitor | Seconds to sleep between checks. The alert thresholds are counted in checks and assume a 60-second interval (2 checks = 2 minutes, and so on), so changing this stretches or shrinks every threshold proportionally. Leave it at 60 unless you mean that. |
 | `SAMPLE_DURATION` | no | `10` | monitor | Seconds of audio to capture on each check. |
 | `AZURACAST_BASE_URL` | yes* | — | both | Base URL of Azuracast, no trailing slash. |
 | `AZURACAST_API_KEY` | yes* | — | both | API key from step 3. |
-| `AZURACAST_STATION_ID` | yes* | — | both | Station shortcode or numeric ID. |
+| `AZURACAST_STATION_ID` | yes* | — | monitor | Station shortcode or numeric ID. (Docker: goes in `stations/<name>.env`, not `.env`; the bot reads `azuracast_station_id` from `stations.json`.) |
 | `DISCORD_BOT_TOKEN` | yes (bot) | — | bot | Bot token from the Developer Portal. The bot refuses to start without it. |
 | `DISCORD_CHANNEL_ID` | yes (bot) | — | bot | Channel the bot accepts commands in. The bot refuses to start without it. |
 | `GRACE_PERIOD_MINUTES` | no | `15` | bot | How long `!working-on-it` pauses monitoring. |
@@ -126,8 +126,11 @@ From the project directory:
 # FIRST, follow "Multiple stations" below: create stations/<name>.env from the
 # examples, create stations.json, and (if upgrading) migrate the old state files.
 
-# Build and start the bot and one monitor per station
+# Build and start the bot and the radiospiral monitor
 docker compose up -d --build
+
+# Also start the secondary stations' monitors (pulse, inner, outer)
+docker compose --profile secondary up -d --build
 
 # Watch the logs
 docker compose logs -f
@@ -136,7 +139,7 @@ docker compose logs -f
 docker compose down
 ```
 
-This builds one image (Python 3.10 + ffmpeg) and starts one `monitor-<station>` container per station plus one `bot` container (names are prefixed with the compose project name, which defaults to the directory name). They use host networking, restart automatically unless stopped, and share state through bind-mounted directories under `state/`. See "Multiple stations" below for the per-station setup.
+This builds one image (Python 3.10 + ffmpeg) and starts the `monitor-radiospiral` container plus one `bot` container (and, with `--profile secondary`, one `monitor-<station>` container for each of the other stations) (names are prefixed with the compose project name, which defaults to the directory name). They use host networking, restart automatically unless stopped, and share state through bind-mounted directories under `state/`. See "Multiple stations" below for the per-station setup.
 
 Notes:
 - The containers get `.env` (and, for monitors, `stations/<name>.env`) at startup through `env_file`; they are not baked into the image. After editing them, run `docker compose up -d` again to recreate the containers.
@@ -149,23 +152,32 @@ One bot and one monitor per station. Setup:
 1. Put the settings shared by every station (webhook, bot token, Azuracast URL and key, staff role) in `.env`.
 2. For each station, copy `stations/<name>.env.example` to `stations/<name>.env` and fill it in. It sets `STATION_NAME`, `STREAM_URL`, `AZURACAST_STATION_ID`, `STATE_DIR=/state`, and `STREAMERS_ENABLED`. It is loaded after `.env`, so it overrides it. The shortcodes and stream URLs in the pulse, inner, and outer examples are placeholders: confirm them against Azuracast.
 3. Copy `stations.json.example` to `stations.json`. The bot reads it (path from `STATIONS_FILE`) to learn the station names and where each station's state lives. At most one station may have `"streamers_enabled": true`; the streamer commands apply to that one.
-4. Start with `docker compose up -d --build`.
+4. **Create `stations.json` before the first `up`.** The bot's bind mount points at it; if the file does not exist, Docker creates a *directory* with that name and the bot crash-loops with "cannot read file" (from memory of Docker's behaviour; not yet verified on the test server).
+5. **Move station-specific keys out of `.env`.** If your `.env` came from an older single-station install it still holds `STREAM_URL` and `AZURACAST_STATION_ID` for radiospiral. Move those two keys into `stations/radiospiral.env` and delete them from `.env`. A station env file that omits them then fails loudly instead of silently inheriting radiospiral's stream.
+6. Start with `docker compose up -d --build`.
 
-State layout: each monitor mounts `./state/<name>` as `/state` and keeps its three state files there. The bot mounts the whole `./state` directory and finds each station's files via `state_dir` in `stations.json` (for example `/state/radiospiral`). To add a station, add a `monitor-<name>` service to `docker-compose.yml`, a `stations/<name>.env`, a `stations.json` entry, and list it under the bot's `depends_on`.
+**Running fewer than four stations.** `docker compose up -d` starts only the radiospiral monitor and the bot: the pulse, inner, and outer monitors are in the Compose profile `secondary`. Add `--profile secondary` (or set `COMPOSE_PROFILES=secondary` in the environment or in `.env`) to start them too, for example `docker compose --profile secondary up -d`. The bot waits only for the radiospiral monitor. `stations.json` may list only the stations that actually exist, so a one-station install lists just radiospiral. Note that `docker compose down` only stops services whose profile is active, so use the same `--profile` flag with `down`. Profile behaviour is written from memory of Docker Compose and is **unverified until run on the test server**.
+
+State layout: each monitor mounts `./state/<name>` as `/state` and keeps its three state files there. The bot mounts the whole `./state` directory and finds each station's files via `state_dir` in `stations.json` (for example `/state/radiospiral`). To add a station, add a `monitor-<name>` service to `docker-compose.yml`, a `stations/<name>.env`, and a `stations.json` entry; give the new service `profiles: [secondary]` like the other secondary monitors (the bot's `depends_on` lists only the radiospiral monitor).
 
 **Separate test stack.** `docker compose -p <project> up -d` starts a second, independent stack: there are no fixed container names, so nothing collides with production. Run it from its own checkout or directory with its **own** `.env` containing a test Discord webhook, bot token, and channel, and its own `state/`. Never reuse production webhooks in a test stack, or a test run can post to a production channel.
 
-**Migrating an existing single-station install.** Before the first `up` of the new compose file, move the old state files into the new layout (this keeps the list of suspended streamers):
+**Migrating an existing single-station install.** Do these in order:
+
+1. **Stop the old stack first.** From the project directory, with the OLD `docker-compose.yml` still in place (before pulling the new code or moving any state files), run `docker compose down`. The old service was called `monitor` (container `greedy-shark-monitor`); the new file has no such service, so if you skip this, `docker compose up -d` leaves the old container running as an orphan (Compose only warns), and you get duplicate, unprefixed alerts reading the old mounts. If you already pulled the new code, `docker compose up -d --remove-orphans` is the fallback. This behaviour is from memory and is to be verified on the test server.
+2. Pull the new code.
+3. Move the old state files into the new layout (this keeps the list of suspended streamers):
 
 ```bash
 mkdir -p state/radiospiral && mv .grace_period_until .auto_suspended_streamers .monitor_state state/radiospiral/
 ```
 
-Without this, Docker creates empty `state/<name>` directories and the monitors start with empty state; the old root-level files are simply ignored. Then create `stations/radiospiral.env` and the other files as above.
+Without this, Docker creates empty `state/<name>` directories and the monitors start with empty state; the old root-level files are simply ignored.
+4. Create `stations/radiospiral.env`, `stations.json`, and the other files as above (including moving `STREAM_URL` and `AZURACAST_STATION_ID` out of `.env`), then `docker compose up -d --build`.
 
 ### Bot commands per station
 
-With more than one station, `!woi` (`!working-on-it`), `!cg` (`!cancel-grace`), `!gs` (`!grace-status`), and `!shark-status` take a station name, e.g. `!woi radiospiral` or `!gs pulse`. The bot refuses rather than guessing when the name is missing or unknown. Each station has its own grace period. A grace period silences that station's alerts whether or not a streamer is connected. The streamer commands (`!streamers`, `!shark`, `!unshark`, `!sharked`, `!retrack`) apply only to the one streamers-enabled station.
+`!woi` (`!working-on-it`), `!cg` (`!cancel-grace`), `!gs` (`!grace-status`), and `!shark-status` always take a station name, even on a single-station install: type `!woi radiospiral`, `!gs pulse`, and so on. The bot refuses rather than guessing when the name is missing or unknown. Each station has its own grace period. A grace period silences that station's alerts whether or not a streamer is connected. The streamer commands (`!streamers`, `!shark`, `!unshark`, `!sharked`, `!retrack`) apply only to the one streamers-enabled station.
 
 ### 5 (alternative). Run it directly with Python
 
@@ -178,10 +190,19 @@ pip install -r requirements.txt
 # The state files must exist in the project directory
 touch .grace_period_until .auto_suspended_streamers .monitor_state
 
+# The bot always needs a station list. For a single station, create stations.json:
+cat > stations.json <<'JSON'
+[
+  {"name": "radiospiral", "state_dir": ".", "azuracast_station_id": "my_station", "streamers_enabled": true}
+]
+JSON
+
 # Run both, from the project directory, in separate terminals or under systemd/tmux
 python monitor_stream.py
 python grace_period_bot.py
 ```
+
+`stations.json` is required by the bot (it refuses to start without it), and `state_dir` must be the directory the monitor uses as `STATE_DIR` (`.` here, matching the monitor's default). The `.env` file for a Python install holds everything, including `STREAM_URL` and `AZURACAST_STATION_ID`; set `STATION_NAME=radiospiral` there too if you want alerts prefixed. Even with one station, the bot commands need the station name: `!woi radiospiral`.
 
 Both processes look for `.env` and the state files in the **current working directory**, so start them from the project directory. Under systemd, set `WorkingDirectory=` to the project directory.
 
@@ -235,6 +256,7 @@ Use `!shark-help` (or `!sharkhelp`) in Discord to see all available commands wit
 ### State Transitions
 - When `!working-on-it` is used, the monitor enters grace period mode
 - When grace period expires, normal monitoring resumes
+- A grace period silences alerts whether or not a streamer is connected. The monitor posts "Grace period activated" / "Grace period expired" messages for streamer-less stations too (naming the streamer only when one is connected; if a different streamer is on when grace expires, the message names the one who is on now)
 - All silence counters reset on state transitions
 
 The silence detection algorithm looks for zero-amplitude signals. The signal level is hardcoded, as it has proven reliable for detecting true silence versus very quiet audio. A failure to fetch audio from the stream at all also counts as a silent check.

@@ -4,6 +4,12 @@
 # stations/<name>.env overrides .env.
 # There is no container_name anywhere, so a second stack started with
 # `docker compose -p <project> up -d` cannot collide with production.
+#
+# Profiles: radiospiral and the bot have no profile, so a plain
+# `docker compose up -d` starts only those two. The other monitors are in the
+# `secondary` profile; start them with `--profile secondary` or
+# COMPOSE_PROFILES=secondary. (Profile behaviour not yet verified; to be
+# checked on the test server.)
 x-shark-common: &shark-common
   build: .
   restart: unless-stopped
@@ -28,6 +34,7 @@ services:
   monitor-pulse:
     <<: *shark-common
     command: python monitor_stream.py
+    profiles: [secondary]
     env_file: [.env, stations/pulse.env]
     volumes:
       - ./state/pulse:/state
@@ -36,6 +43,7 @@ services:
   monitor-inner:
     <<: *shark-common
     command: python monitor_stream.py
+    profiles: [secondary]
     env_file: [.env, stations/inner.env]
     volumes:
       - ./state/inner:/state
@@ -44,6 +52,7 @@ services:
   monitor-outer:
     <<: *shark-common
     command: python monitor_stream.py
+    profiles: [secondary]
     env_file: [.env, stations/outer.env]
     volumes:
       - ./state/outer:/state
@@ -58,9 +67,6 @@ services:
       - ./stations.json:/app/stations.json:ro
     depends_on:
       - monitor-radiospiral
-      - monitor-pulse
-      - monitor-inner
-      - monitor-outer
     healthcheck:
       test: ["CMD", "pgrep", "-f", "grace_period_bot.py"]
       interval: 2m
