@@ -50,11 +50,12 @@ def tagged(message, station_name=""):
     return f"[{station_name}] {message}" if station_name else message
 
 
-async def with_station(name, send_fn, stations, action):
+async def with_station(name, send_fn, stations, action, command="woi"):
     """Run `await action(station)` for the named station.
 
     Never guesses: if the name is missing or unknown, sends one refusal
-    listing the valid names and does not call `action`.
+    listing the valid names and does not call `action`. `command` is the
+    command name the user typed, used in the example.
     """
     st = find_station(name, stations)
     if st is None:
@@ -64,7 +65,7 @@ async def with_station(name, send_fn, stations, action):
             problem = f"❌ Unknown station `{name}`."
         else:
             problem = "❌ Which station? Please name one."
-        await send_fn(f"{problem} Stations: {names}. Example: `!woi {example}`")
+        await send_fn(f"{problem} Stations: {names}. Example: `!{command} {example}`")
         return
     await action(st)
 
@@ -395,6 +396,13 @@ async def handle_shark_status(send_fn, client,
                     s = 's' if grace_remaining != 1 else ''
                     status_msg = (f"**{streamer_name}** streaming, "
                                   f"{grace_remaining} minute{s} into grace period")
+                elif grace_active or monitor_state == 'grace_period':
+                    if grace_remaining < 1:
+                        status_msg = "Grace period active, less than a minute remaining"
+                    else:
+                        s = 's' if grace_remaining != 1 else ''
+                        status_msg = (f"Grace period active, "
+                                      f"{grace_remaining} minute{s} remaining")
                 elif monitor_state == 'no_streamer':
                     if silence_checks == 0:
                         status_msg = "No silence detected"
@@ -471,7 +479,8 @@ async def working_on_it(ctx, station: str = None):
     async def action(st):
         await handle_working_on_it(ctx.send, grace_file=st.paths.grace,
                                    station_name=st.name)
-    await with_station(station, ctx.send, STATIONS, action)
+    await with_station(station, ctx.send, STATIONS, action,
+                       command=ctx.invoked_with)
 
 @bot.command(name='cancel-grace', aliases=['cancelgrace', 'cg'])
 async def cancel_grace(ctx, station: str = None):
@@ -481,7 +490,8 @@ async def cancel_grace(ctx, station: str = None):
     async def action(st):
         await handle_cancel_grace(ctx.send, grace_file=st.paths.grace,
                                   station_name=st.name)
-    await with_station(station, ctx.send, STATIONS, action)
+    await with_station(station, ctx.send, STATIONS, action,
+                       command=ctx.invoked_with)
 
 @bot.command(name='grace-status', aliases=['gracestatus', 'gs'])
 async def grace_status(ctx, station: str = None):
@@ -491,7 +501,8 @@ async def grace_status(ctx, station: str = None):
     async def action(st):
         await handle_grace_status(ctx.send, grace_file=st.paths.grace,
                                   station_name=st.name)
-    await with_station(station, ctx.send, STATIONS, action)
+    await with_station(station, ctx.send, STATIONS, action,
+                       command=ctx.invoked_with)
 
 @bot.command(name='unshark')
 async def unshark(ctx, streamer_id: str = None):
@@ -517,7 +528,8 @@ async def shark_status(ctx, station: str = None):
             state_file=st.paths.monitor_state,
             grace_file=st.paths.grace,
             station_name=st.name)
-    await with_station(station, ctx.send, STATIONS, action)
+    await with_station(station, ctx.send, STATIONS, action,
+                       command=ctx.invoked_with)
 
 @bot.command(name='sharked')
 async def sharked(ctx):
