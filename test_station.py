@@ -65,6 +65,11 @@ def test_find_station_none_and_unknown_return_none():
             [_entry("a", streamers_enabled=True), _entry("b", streamers_enabled=True)],
             "streamers_enabled",
         ),
+        (
+            [_entry("pulse", state_dir="/s/x"), _entry("inner", state_dir="/s/x/")],
+            "pulse.*inner.*/s/x|inner.*pulse.*/s/x",
+        ),
+        ([_entry("my station")], "whitespace"),
     ],
 )
 def test_load_rejects(tmp_path, data, msg):

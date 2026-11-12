@@ -58,6 +58,7 @@ def load_stations(path: str) -> list[Station]:
 
     stations: list[Station] = []
     seen: set[str] = set()
+    dirs: dict[str, str] = {}
     for i, entry in enumerate(data):
         if not isinstance(entry, dict):
             raise StationConfigError(f"{label}: entry {i} is not an object")
@@ -69,10 +70,22 @@ def load_stations(path: str) -> list[Station]:
                     f"{label}: entry {i} missing or invalid '{key}'"
                 )
         name = str(entry["name"]).strip()
+        if any(ch.isspace() for ch in name):
+            raise StationConfigError(
+                f"{label}: station name '{name}' must not contain whitespace "
+                "(it is typed as one command argument)"
+            )
         key = name.lower()
         if key in seen:
             raise StationConfigError(f"{label}: duplicate station name '{key}'")
         seen.add(key)
+        norm_dir = os.path.normpath(str(entry["state_dir"]))
+        if norm_dir in dirs:
+            raise StationConfigError(
+                f"{label}: stations '{dirs[norm_dir]}' and '{name}' share "
+                f"state_dir '{norm_dir}'"
+            )
+        dirs[norm_dir] = name
         enabled = entry.get("streamers_enabled", False)
         if not isinstance(enabled, bool):
             raise StationConfigError(
