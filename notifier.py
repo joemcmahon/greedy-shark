@@ -13,12 +13,14 @@ class Notifier(Protocol):
 
 
 class DiscordNotifier:
-    def __init__(self, webhook_url: str, staff_role_id: str):
+    def __init__(self, webhook_url: str, staff_role_id: str,
+                 station_name: str = ""):
         self.webhook_url = webhook_url
         self.staff_role_id = staff_role_id
+        self.prefix = f"[{station_name}] " if station_name else ""
 
     def send_message(self, message: str) -> None:
-        payload = {"content": f"\U0001F988 **{message}**"}
+        payload = {"content": f"\U0001F988 **{self.prefix}{message}**"}
         try:
             resp = requests.post(self.webhook_url, json=payload)
             if resp.status_code != 204:
@@ -29,7 +31,7 @@ class DiscordNotifier:
     def send_alert(self, reason: str, rms: float | None = None,
                    variance: float | None = None, stderr: str = "") -> None:
         content = (f"<@&{self.staff_role_id}> \U0001F988 \U0001F6A8 "
-                   f"**Stream issue detected**\n**Reason**: {reason}")
+                   f"**{self.prefix}Stream issue detected**\n**Reason**: {reason}")
         if rms is not None:
             content += f"\n**RMS**: {rms:.2f}"
         if variance is not None:

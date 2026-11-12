@@ -21,6 +21,7 @@ from monitor_stream import (
     save_monitor_state,
     ensure_state_dir,
     run_check,
+    check_required_config,
     SILENCE_ALERT_LEVEL,
     NO_STREAMER_REPEAT_INTERVAL,
     STREAMER_DETECT_THRESHOLD,
@@ -30,12 +31,13 @@ from monitor_stream import (
 )
 
 
-def make_ctx(notifier=None, azuracast=None, sample_fn=None):
+def make_ctx(notifier=None, azuracast=None, sample_fn=None, streamers_enabled=True):
     """Build a MonitorContext with sensible test defaults."""
     return MonitorContext(
         notifier=notifier or Mock(),
         azuracast=azuracast or Mock(),
         sample_fn=sample_fn or Mock(return_value=None),
+        streamers_enabled=streamers_enabled,
     )
 
 
@@ -636,9 +638,38 @@ class TestCheckAndFixSuspendedFilePath:
         assert any("directory" in r.message.lower() for r in caplog.records)
 
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+# --- Station name, streamer-less monitors, required config ---
 
+@patch('monitor_stream.save_monitor_state')
+@patch('monitor_stream.check_grace_period_active', return_value=False)
+def test_streamerless_monitor_never_polls_azuracast(_grace, _save):
+    azuracast = Mock()
+    ctx = make_ctx(azuracast=azuracast, sample_fn=Mock(return_value=None),
+                   streamers_enabled=False)
+    run_check(ctx)
+    azuracast.check_streamer_connected.assert_not_called()
+    assert ctx.state == MonitorState.NO_STREAMER
+    assert ctx.consecutive_silent_checks == 1
+
+
+@patch('monitor_stream.save_monitor_state')
+@patch('monitor_stream.check_grace_period_active', return_value=False)
+def test_streamers_enabled_defaults_true(_grace, _save):
+    azuracast = Mock()
+    azuracast.check_streamer_connected.return_value = (False, None, None)
+    ctx = MonitorContext(notifier=Mock(), azuracast=azuracast,
+                         sample_fn=Mock(return_value=None))
+    assert ctx.streamers_enabled is True
+    run_check(ctx)
+    azuracast.check_streamer_connected.assert_called_once()
+
+
+def test_check_required_config_exits_without_webhook():
+    for missing in ("", None):
+        with pytest.raises(SystemExit) as exc:
+            check_required_config(missing)
+        assert exc.value.code == 1
+    assert check_required_config("https://x") is None
 
 # --- Per-station state paths ---
 
@@ -696,3 +727,7 @@ def test_default_state_paths_are_todays_files():
     assert os.path.basename(sp.grace) == ".grace_period_until"
     assert os.path.basename(sp.suspended) == ".auto_suspended_streamers"
     assert os.path.basename(sp.monitor_state) == ".monitor_state"
+
+
+if __name__ == '__main__':
+    pytest.main([__file__, '-v'])

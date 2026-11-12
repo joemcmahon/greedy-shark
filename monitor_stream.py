@@ -257,7 +257,8 @@ STREAMER_REPEAT_INTERVAL = 2  # repeat staff alert every 2 checks after suspend 
 class MonitorContext:
     """Holds the state machine context and injectable dependencies."""
     def __init__(self, notifier: Notifier, azuracast: AzuracastClient,
-                 sample_fn) -> None:
+                 sample_fn, streamers_enabled: bool = True) -> None:
+        self.streamers_enabled = streamers_enabled
         self.notifier = notifier
         self.azuracast = azuracast
         self.sample_fn = sample_fn
@@ -401,7 +402,10 @@ def run_check(ctx):
     """Run one monitoring pass: update state, sample audio, and alert on schedule."""
     logging.info(f"🔁 Checking stream... [State: {ctx.state.value}]")
 
-    is_streamer_connected, streamer_name, streamer_id = ctx.azuracast.check_streamer_connected()
+    if ctx.streamers_enabled:
+        is_streamer_connected, streamer_name, streamer_id = ctx.azuracast.check_streamer_connected()
+    else:
+        is_streamer_connected, streamer_name, streamer_id = False, None, None
     grace_period_active = check_grace_period_active()
 
     new_state = determine_next_state(ctx, is_streamer_connected, grace_period_active)
@@ -429,11 +433,21 @@ def run_check(ctx):
     save_monitor_state(ctx)
 
 
+def check_required_config(webhook_url) -> None:
+    """Exit if the Discord webhook is missing (DiscordNotifier swallows post errors,
+    so without this the monitor would run healthy but mute)."""
+    if not webhook_url:
+        logging.error("DISCORD_WEBHOOK_URL is not set; refusing to start.")
+        raise SystemExit(1)
+
+
 def monitor_loop():
+    check_required_config(DISCORD_WEBHOOK_URL)
     ensure_state_dir()
-    notifier = DiscordNotifier(DISCORD_WEBHOOK_URL, STAFF_ROLE_ID)
+    notifier = DiscordNotifier(DISCORD_WEBHOOK_URL, STAFF_ROLE_ID, station_name=STATION_NAME)
     client = AzuracastClient(AZURACAST_BASE_URL, AZURACAST_API_KEY, AZURACAST_STATION_ID)
-    ctx = MonitorContext(notifier=notifier, azuracast=client, sample_fn=grab_audio_sample)
+    ctx = MonitorContext(notifier=notifier, azuracast=client, sample_fn=grab_audio_sample,
+                         streamers_enabled=STREAMERS_ENABLED)
 
     atexit.register(lambda: notifier.send_message("Monitor has exited"))
     signal.signal(signal.SIGINT, kill_handler)
