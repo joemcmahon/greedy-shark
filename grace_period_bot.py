@@ -4,6 +4,8 @@ from discord.ext import commands
 from dotenv import load_dotenv
 import time
 import json
+import functools
+from typing import NamedTuple
 from datetime import datetime, timedelta
 
 # Import functions from monitor_stream
@@ -23,6 +25,7 @@ from station import (
     find_station,
     load_stations,
     station_names,
+    streamer_station,
 )
 
 # Load configuration
@@ -34,15 +37,8 @@ GRACE_PERIOD_FILE = ".grace_period_until"
 AUTO_SUSPENDED_FILE = ".auto_suspended_streamers"
 AZURACAST_BASE_URL = os.getenv("AZURACAST_BASE_URL")
 AZURACAST_API_KEY = os.getenv("AZURACAST_API_KEY")
-AZURACAST_STATION_ID = os.getenv("AZURACAST_STATION_ID")
 STATIONS_FILE = os.getenv("STATIONS_FILE", "stations.json")
 STATIONS: "list[Station]" = []  # set at startup (see __main__)
-
-real_client = AzuracastClient(
-    base_url=AZURACAST_BASE_URL or "",
-    api_key=AZURACAST_API_KEY or "",
-    station_id=AZURACAST_STATION_ID or "",
-)
 
 # Bot setup
 intents = discord.Intents.default()
@@ -73,17 +69,49 @@ async def with_station(name, send_fn, stations, action):
     await action(st)
 
 
-async def handle_shark_help(send_fn, grace_minutes=GRACE_PERIOD_MINUTES):
+class StreamerTools(NamedTuple):
+    client: AzuracastClient
+    track_fn: object
+    untrack_fn: object
+    load_fn: object
+
+
+def streamer_tools(station, base_url, api_key):
+    """Azuracast client and suspended-file functions bound to one station."""
+    path = station.paths.suspended
+    return StreamerTools(
+        client=AzuracastClient(base_url or "", api_key or "",
+                               station.azuracast_station_id),
+        track_fn=functools.partial(add_auto_suspended_streamer, path=path),
+        untrack_fn=functools.partial(remove_auto_suspended_streamer, path=path),
+        load_fn=functools.partial(load_auto_suspended_streamers, path=path),
+    )
+
+
+async def with_streamer_station(send_fn, stations, action):
+    """Run `await action(station)` for the one streamers-enabled station."""
+    st = streamer_station(stations)
+    if st is None:
+        await send_fn("❌ No station has streamers enabled, so streamer "
+                      "commands are unavailable.")
+        return
+    await action(st)
+
+
+async def handle_shark_help(send_fn, grace_minutes=GRACE_PERIOD_MINUTES,
+                            station_names=""):
+    sa = " <station>" if station_names else ""
+    stations_line = (f"**Stations:** {station_names}\n" if station_names else "")
     help_text = """
 🦈 **Greedy Shark Bot Commands**
 
-**Grace Period Commands:**
-• `!working-on-it` (or `!woi`) - Activate a {grace_min}-minute grace period
+{stations_line}**Grace Period Commands:**
+• `!working-on-it{sa}` (or `!woi{sa}`) - Activate a {grace_min}-minute grace period
   Pauses monitoring while you fix technical issues
 
-• `!grace-status` (or `!gs`) - Check if grace period is active and when it expires
+• `!grace-status{sa}` (or `!gs{sa}`) - Check if grace period is active and when it expires
 
-• `!cancel-grace` (or `!cg`) - Cancel an active grace period early
+• `!cancel-grace{sa}` (or `!cg{sa}`) - Cancel an active grace period early
 
 **Streamer Management:**
 • `!streamers` - List all registered streamers with their IDs and status
@@ -104,7 +132,7 @@ async def handle_shark_help(send_fn, grace_minutes=GRACE_PERIOD_MINUTES):
   Use when someone was suspended outside the bot and is missing from `!sharked`
   Example: `!retrack 42`
 
-• `!shark-status` (or `!status`) - Show current Shark monitoring status
+• `!shark-status{sa}` (or `!status{sa}`) - Show current Shark monitoring status
 
 • `!shark-help` (or `!sharkhelp`) - Show this help message
 
@@ -115,7 +143,7 @@ async def handle_shark_help(send_fn, grace_minutes=GRACE_PERIOD_MINUTES):
 • Staff uses `!streamers` then `!shark <id>` to suspend when needed
 • Audio detection resets all timers
 • Grace period pauses monitoring entirely
-""".format(grace_min=grace_minutes)
+""".format(grace_min=grace_minutes, sa=sa, stations_line=stations_line)
     await send_fn(help_text)
 
 
@@ -433,7 +461,7 @@ async def on_message(message):
 async def shark_help(ctx):
     if ctx.channel.id != DISCORD_CHANNEL_ID:
         return
-    await handle_shark_help(ctx.send)
+    await handle_shark_help(ctx.send, station_names=station_names(STATIONS))
 
 @bot.command(name='working-on-it', aliases=['workingonit', 'woi'])
 async def working_on_it(ctx, station: str = None):
@@ -469,7 +497,11 @@ async def grace_status(ctx, station: str = None):
 async def unshark(ctx, streamer_id: str = None):
     if ctx.channel.id != DISCORD_CHANNEL_ID:
         return
-    await handle_unshark(streamer_id, ctx.send, real_client)
+
+    async def action(st):
+        t = streamer_tools(st, AZURACAST_BASE_URL, AZURACAST_API_KEY)
+        await handle_unshark(streamer_id, ctx.send, t.client, untrack_fn=t.untrack_fn)
+    await with_streamer_station(ctx.send, STATIONS, action)
 
 @bot.command(name='shark-status', aliases=['sharkstatus', 'status'])
 async def shark_status(ctx, station: str = None):
@@ -491,27 +523,43 @@ async def shark_status(ctx, station: str = None):
 async def sharked(ctx):
     if ctx.channel.id != DISCORD_CHANNEL_ID:
         return
-    await handle_sharked(ctx.send)
+
+    async def action(st):
+        t = streamer_tools(st, AZURACAST_BASE_URL, AZURACAST_API_KEY)
+        await handle_sharked(ctx.send, load_fn=t.load_fn)
+    await with_streamer_station(ctx.send, STATIONS, action)
 
 @bot.command(name='streamers')
 async def streamers(ctx):
     if ctx.channel.id != DISCORD_CHANNEL_ID:
         return
-    await handle_streamers(ctx.send, real_client)
+
+    async def action(st):
+        t = streamer_tools(st, AZURACAST_BASE_URL, AZURACAST_API_KEY)
+        await handle_streamers(ctx.send, t.client)
+    await with_streamer_station(ctx.send, STATIONS, action)
 
 @bot.command(name='shark')
 async def shark(ctx, streamer_id: str = None):
     if ctx.channel.id != DISCORD_CHANNEL_ID:
         return
-    await handle_shark(streamer_id, ctx.send, real_client,
-                       author_name=ctx.author.display_name)
+
+    async def action(st):
+        t = streamer_tools(st, AZURACAST_BASE_URL, AZURACAST_API_KEY)
+        await handle_shark(streamer_id, ctx.send, t.client, track_fn=t.track_fn,
+                           author_name=ctx.author.display_name)
+    await with_streamer_station(ctx.send, STATIONS, action)
 
 @bot.command(name='retrack')
 async def retrack(ctx, streamer_id: str = None):
     if ctx.channel.id != DISCORD_CHANNEL_ID:
         return
-    await handle_retrack(streamer_id, ctx.send, real_client,
-                         author_name=ctx.author.display_name)
+
+    async def action(st):
+        t = streamer_tools(st, AZURACAST_BASE_URL, AZURACAST_API_KEY)
+        await handle_retrack(streamer_id, ctx.send, t.client, track_fn=t.track_fn,
+                             author_name=ctx.author.display_name)
+    await with_streamer_station(ctx.send, STATIONS, action)
 
 if __name__ == "__main__":
     if not DISCORD_BOT_TOKEN or DISCORD_BOT_TOKEN == "your_bot_token_here":

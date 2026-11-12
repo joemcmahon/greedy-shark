@@ -17,8 +17,11 @@ from grace_period_bot import (
     GRACE_PERIOD_MINUTES,
     with_station,
     tagged,
+    with_streamer_station,
+    streamer_tools,
 )
 from station import Station
+from monitor_stream import load_auto_suspended_streamers
 
 
 # ---------------------------------------------------------------------------
@@ -520,3 +523,47 @@ class TestPerStationGrace:
     async def test_untagged_by_default(self):
         assert tagged("hi") == "hi"
         assert tagged("hi", "pulse") == "[pulse] hi"
+
+
+# ---------------------------------------------------------------------------
+# Multi-station: streamer commands route to the streamers station; help
+# ---------------------------------------------------------------------------
+
+class TestStreamerRouting:
+    async def test_with_streamer_station_none_configured(self, tmp_path):
+        a, b = two_stations(tmp_path)
+        send_fn, msgs = await capture()
+        action = AsyncMock()
+        await with_streamer_station(send_fn, [a, b], action)
+        assert len(msgs) == 1
+        assert "streamers" in msgs[0]
+        action.assert_not_awaited()
+
+    async def test_with_streamer_station_routes_to_streamer_station(self, tmp_path):
+        a, _ = two_stations(tmp_path)
+        b = Station("inner", str(tmp_path / "inner"), "2", streamers_enabled=True)
+        send_fn, msgs = await capture()
+        action = AsyncMock()
+        await with_streamer_station(send_fn, [a, b], action)
+        action.assert_awaited_once_with(b)
+        assert msgs == []
+
+    def test_streamer_tools_write_only_to_that_stations_dir(self, tmp_path):
+        a, b = two_stations(tmp_path)
+        t = streamer_tools(a, "http://x", "k")
+        t.track_fn(7, "DJ", reason="r")
+        assert "7" in t.load_fn()
+        assert load_auto_suspended_streamers(path=b.paths.suspended) == {}
+        t.untrack_fn(7)
+        assert t.load_fn() == {}
+
+    def test_streamer_tools_client_uses_station_id(self, tmp_path):
+        a, _ = two_stations(tmp_path)
+        t = streamer_tools(a, "http://x", "k")
+        assert t.client.station_id == a.azuracast_station_id
+
+    async def test_help_lists_stations_and_station_argument(self):
+        send_fn, msgs = await capture()
+        await handle_shark_help(send_fn, station_names="radiospiral, pulse")
+        assert "radiospiral, pulse" in msgs[0]
+        assert "!woi <station>" in msgs[0]
