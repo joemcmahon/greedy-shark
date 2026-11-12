@@ -321,10 +321,10 @@ def handle_state_transition(ctx, new_state, streamer_name=None, streamer_id=None
         ctx.notifier.send_message("Grace period activated. Monitoring paused.")
 
     elif new_state == MonitorState.STREAMER_ACTIVE and previous_state == MonitorState.GRACE_PERIOD:
-        if ctx.streamer_name is None:
-            # A streamer connected during grace
-            ctx.streamer_id = streamer_id
-            ctx.streamer_name = streamer_name
+        # The arguments are this pass's live poll; whoever is connected now is
+        # the streamer, not whoever was connected when grace began.
+        ctx.streamer_id = streamer_id
+        ctx.streamer_name = streamer_name
         ctx.notifier.send_message(f"Grace period expired for '{ctx.streamer_name}'. Normal monitoring resumed.")
 
     elif new_state == MonitorState.STREAMER_ACTIVE and previous_state == MonitorState.NO_STREAMER:
@@ -424,6 +424,12 @@ def run_check(ctx):
     new_state = determine_next_state(ctx, is_streamer_connected, grace_period_active)
     if new_state:
         handle_state_transition(ctx, new_state, streamer_name, streamer_id)
+
+    if ctx.state == MonitorState.GRACE_PERIOD and ctx.streamers_enabled:
+        # Keep identity in step with the live poll during grace, so the state
+        # file and !shark-status show who is connected now (None if nobody).
+        ctx.streamer_id = streamer_id
+        ctx.streamer_name = streamer_name
 
     wav_bytes = ctx.sample_fn(STREAM_URL, SAMPLE_DURATION)
 

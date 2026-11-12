@@ -794,5 +794,52 @@ class TestGraceWithNoStreamer:
         assert ctx.streamer_id == 5
 
 
+class TestGraceHandover:
+    """Streamer identity must follow the live poll while a grace period runs."""
+
+    def test_handover_during_grace_names_new_streamer(self, tmp_path):
+        notifier = FileNotifier(tmp_path / "out.jsonl")
+        azuracast = Mock()
+        ctx = make_ctx(notifier=notifier, azuracast=azuracast,
+                       sample_fn=Mock(return_value=None))
+        ctx.state = MonitorState.STREAMER_ACTIVE
+        ctx.streamer_name, ctx.streamer_id = "A", 11
+
+        def run(grace, poll):
+            azuracast.check_streamer_connected.return_value = poll
+            with patch('monitor_stream.save_monitor_state'), \
+                    patch('monitor_stream.check_grace_period_active', return_value=grace):
+                run_check(ctx)
+
+        run(True, (True, "A", 11))          # ACTIVE -> GRACE
+        assert ctx.state == MonitorState.GRACE_PERIOD
+        run(True, (False, None, None))      # A leaves
+        assert (ctx.streamer_name, ctx.streamer_id) == (None, None)
+        run(True, (True, "B", 22))          # B connects
+        assert (ctx.streamer_name, ctx.streamer_id) == ("B", 22)
+        run(False, (True, "B", 22))         # grace expires
+
+        assert ctx.state == MonitorState.STREAMER_ACTIVE
+        assert (ctx.streamer_name, ctx.streamer_id) == ("B", 22)
+        contents = [r.get("content", "") for r in notifier.get_records()]
+        assert any("Grace period activated for 'A'" in c for c in contents)
+        assert any("Grace period expired for 'B'" in c for c in contents)
+        assert not any("expired for 'A'" in c for c in contents)
+
+        for _ in range(STREAMER_WARNING_THRESHOLD):
+            run(False, (True, "B", 22))
+        alerts = [r for r in notifier.get_records() if r["type"] == "alert"]
+        assert alerts
+        assert all("'A'" not in r["reason"] and "11" not in r["reason"] for r in alerts)
+        assert any("`!shark 22`" in r["reason"] for r in alerts)
+
+    def test_expiry_always_takes_live_identity(self):
+        ctx = make_ctx()
+        ctx.state = MonitorState.GRACE_PERIOD
+        ctx.streamer_name, ctx.streamer_id = "A", 1
+        handle_state_transition(ctx, MonitorState.STREAMER_ACTIVE, "B", 2)
+        assert (ctx.streamer_name, ctx.streamer_id) == ("B", 2)
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
