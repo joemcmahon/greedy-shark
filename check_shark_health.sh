@@ -1,45 +1,50 @@
 #!/bin/bash
 # Greedy Shark Health Check Script
-# Run this manually or via cron to monitor the shark
+# Checks every container of the current compose project.
+# Exit codes: 0 all running and healthy, 1 running but unhealthy, 2 any not running.
+# Run from the project directory (or set COMPOSE_PROJECT_NAME).
 
-echo "🦈 Greedy Shark Health Check"
+project="${COMPOSE_PROJECT_NAME:-$(basename "$PWD")}"
+
+echo "🦈 Greedy Shark Health Check (project: $project)"
 echo "============================="
 echo ""
 
-# Check if containers are running
-monitor_status=$(docker inspect -f '{{.State.Status}}' greedy-shark-monitor 2>/dev/null || echo "not found")
-bot_status=$(docker inspect -f '{{.State.Status}}' greedy-shark-bot 2>/dev/null || echo "not found")
+names=$(docker ps -a --filter "label=com.docker.compose.project=$project" --format '{{.Names}}' | sort)
 
-# Check health
-monitor_health=$(docker inspect -f '{{.State.Health.Status}}' greedy-shark-monitor 2>/dev/null || echo "no healthcheck")
-bot_health=$(docker inspect -f '{{.State.Health.Status}}' greedy-shark-bot 2>/dev/null || echo "no healthcheck")
+if [[ -z "$names" ]]; then
+    echo "❌ No containers found for project '$project'!"
+    exit 2
+fi
 
-# Check restart count
-monitor_restarts=$(docker inspect -f '{{.RestartCount}}' greedy-shark-monitor 2>/dev/null || echo "0")
-bot_restarts=$(docker inspect -f '{{.RestartCount}}' greedy-shark-bot 2>/dev/null || echo "0")
+not_running=0
+unhealthy=0
 
-echo "Monitor:"
-echo "  Status: $monitor_status"
-echo "  Health: $monitor_health"
-echo "  Restarts: $monitor_restarts"
-echo ""
+for name in $names; do
+    status=$(docker inspect -f '{{.State.Status}}' "$name" 2>/dev/null || echo "not found")
+    health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}no healthcheck{{end}}' "$name" 2>/dev/null || echo "unknown")
+    restarts=$(docker inspect -f '{{.RestartCount}}' "$name" 2>/dev/null || echo "0")
 
-echo "Bot:"
-echo "  Status: $bot_status"
-echo "  Health: $bot_health"
-echo "  Restarts: $bot_restarts"
-echo ""
+    echo "$name:"
+    echo "  Status: $status"
+    echo "  Health: $health"
+    echo "  Restarts: $restarts"
+    echo ""
 
-# Overall status
-if [[ "$monitor_status" == "running" ]] && [[ "$bot_status" == "running" ]]; then
-    if [[ "$monitor_health" == "healthy" ]] && [[ "$bot_health" == "healthy" ]]; then
-        echo "✅ All systems operational!"
-        exit 0
-    else
-        echo "⚠️  Containers running but health check failing"
-        exit 1
+    if [[ "$status" != "running" ]]; then
+        not_running=1
+    elif [[ "$health" != "healthy" ]]; then
+        unhealthy=1
     fi
-else
+done
+
+if [[ $not_running -eq 1 ]]; then
     echo "❌ One or more containers not running!"
     exit 2
+elif [[ $unhealthy -eq 1 ]]; then
+    echo "⚠️  Containers running but health check failing"
+    exit 1
+else
+    echo "✅ All systems operational!"
+    exit 0
 fi
